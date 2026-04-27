@@ -1,0 +1,61 @@
+{
+  "name": "@blockrun/nano-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for blockrun-nano: Circle Gateway batched USDC payments → BlockRun's full AI model catalog across Polygon, Arbitrum, Optimism, Unichain.",
+  "license": "Apache-2.0",
+  "author": "BlockRun",
+  "homepage": "https://nano.blockrun.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blockrunai/blockrun-nano-client"
+  },
+  "keywords": [
+    "blockrun",
+    "nano",
+    "x402",
+    "circle",
+    "gateway",
+    "usdc",
+    "ai",
+    "openai-compatible",
+    "polygon",
+    "arbitrum"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "e2e": "tsx examples/e2e-test.ts",
+    "address": "tsx examples/print-address.ts"
+  },
+  "dependencies": {
+    "@circle-fin/x402-batching": "^3.0.0",
+    "viem": "^2.47.6"
+  },
+  "optionalDependencies": {
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
