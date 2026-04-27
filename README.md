@@ -46,6 +46,31 @@ await client.withdraw("2");                         // Gateway → wallet (insta
 await client.withdraw("2", { chain: "base" });      // Cross-chain via CCTP (~13 min)
 ```
 
+### Payment intent tracking
+
+Every paid call returns `payment.transaction` — Circle's nanopayment intent UUID.
+On-chain settlement is async (Circle batches the seller's queue).
+
+```ts
+const r = await client.chat({ ... });
+const status = await client.getPaymentStatus(r.payment.transaction);
+// { status: "settled", transactionHash: "0x...", settledAt: "..." }
+//   — once Circle publishes an intent-status API
+// { status: "unknown", note: "Circle hasn't shipped this endpoint yet" }
+//   — until then; watch on-chain Transfer events on payTo as the source of truth
+
+// Or block until terminal state:
+const final = await client.waitForSettlement(r.payment.transaction, {
+  timeoutMs: 5 * 60_000,
+  pollIntervalMs: 10_000,
+});
+```
+
+Note (2026-04): Circle Gateway SDK v3.0.x exposes only `verify` / `settle` /
+`supported`. The SDK probes likely status URLs and falls back to `unknown`
+until Circle ships an official endpoint — at which point this method starts
+returning real data without a buyer-side code change.
+
 ### Paid endpoints
 
 ```ts

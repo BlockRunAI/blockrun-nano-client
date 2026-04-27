@@ -126,8 +126,10 @@ export interface SearchRequest {
 /** Receipt-style metadata returned alongside every paid call. */
 export interface PaymentReceipt {
   /**
-   * Circle batch ID. Onchain settlement appears at the next batch boundary
-   * (~hourly on the hour, moving toward ~15min).
+   * Circle nanopayment intent UUID returned by `BatchFacilitatorClient.settle()`.
+   * On-chain settlement happens asynchronously when Circle batches the seller
+   * queue. Use {@link NanoClient.getPaymentStatus} (best-effort) or
+   * {@link NanoClient.waitForSettlement} to track this intent's progress.
    */
   transaction: string;
   /** Human-readable USDC amount, e.g. "$0.001000". */
@@ -137,6 +139,42 @@ export interface PaymentReceipt {
   /** HTTP status code from the underlying request. */
   status: number;
 }
+
+/**
+ * Status of a Circle Gateway nanopayment intent.
+ *
+ * Note: as of Circle Gateway SDK v3.0.x, no public API endpoint exists to
+ * query the live status of a nanopayment intent — `BatchFacilitatorClient`
+ * only exposes `/verify`, `/settle`, `/supported`. {@link NanoClient.getPaymentStatus}
+ * probes likely URL paths and falls back to `unknown` until Circle publishes
+ * an official endpoint.
+ */
+export type PaymentStatus =
+  | {
+      status: "pending";
+      intentId: string;
+      note: string;
+      facilitatorUrl: string;
+    }
+  | {
+      status: "settled";
+      intentId: string;
+      transactionHash?: string;
+      settledAt?: string;
+      raw?: unknown;
+    }
+  | {
+      status: "failed";
+      intentId: string;
+      reason?: string;
+      raw?: unknown;
+    }
+  | {
+      status: "unknown";
+      intentId: string;
+      note: string;
+      facilitatorUrl: string;
+    };
 
 export interface NanoCallResult<T> {
   data: T;
@@ -196,6 +234,78 @@ export class NanoClient {
     return options?.chain
       ? this.gateway.withdraw(amount, { chain: options.chain })
       : this.gateway.withdraw(amount);
+  }
+
+  // ── Payment intent tracking ──────────────────────────────────────────────
+
+  /**
+   * Best-effort lookup of a Circle Gateway nanopayment intent's status.
+   *
+   * Circle Gateway SDK v3.0.x does not yet expose a public payment-status
+   * endpoint. This method probes a handful of likely URL paths on the
+   * mainnet facilitator (`gateway-api.circle.com`); when none answer, it
+   * returns `{ status: "unknown" }` with an explanatory note. Once Circle
+   * ships an official endpoint, this method will start returning real status
+   * without a code change on the buyer side.
+   *
+   * @param intentId  the UUID returned in `PaymentReceipt.transaction`
+   *                  (which is `BatchFacilitatorClient.settle()`'s
+   *                  `transaction` field for batched payments)
+   */
+  async getPaymentStatus(intentId: string): Promise<PaymentStatus> {
+    const facilitatorUrl = this.facilitatorUrlForChain();
+    const candidates = [
+      `${facilitatorUrl}/v1/x402/intents/${encodeURIComponent(intentId)}`,
+      `${facilitatorUrl}/v1/x402/payments/${encodeURIComponent(intentId)}`,
+      `${facilitatorUrl}/v1/x402/jobs/${encodeURIComponent(intentId)}`,
+      `${facilitatorUrl}/v1/x402/status/${encodeURIComponent(intentId)}`,
+    ];
+
+    for (const url of candidates) {
+      try {
+        const r = await fetch(url, { method: "GET" });
+        if (r.status === 404) continue;
+        if (!r.ok) continue;
+        const body = (await r.json()) as Record<string, unknown>;
+        return interpretCircleStatus(intentId, body);
+      } catch {
+        /* try next candidate */
+      }
+    }
+
+    return {
+      status: "unknown",
+      intentId,
+      facilitatorUrl,
+      note: "Circle Gateway has not published a public payment-status endpoint as of @circle-fin/x402-batching@3.0.x. We probed /v1/x402/{intents,payments,jobs,status}/<id> and got no match. On-chain settlement is the only reliable signal today — watch for ERC-20 Transfer(from=GatewayWallet, to=payTo) events on the buyer's chain.",
+    };
+  }
+
+  /**
+   * Poll {@link getPaymentStatus} until the intent reaches a terminal state
+   * (`settled` or `failed`) or the timeout expires. Returns the last status
+   * observed; if Circle hasn't shipped the status endpoint, expect
+   * `{ status: "unknown" }` and fall back to onchain Transfer event watching.
+   */
+  async waitForSettlement(
+    intentId: string,
+    opts: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<PaymentStatus> {
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
+    const start = Date.now();
+    let last: PaymentStatus = { status: "unknown", intentId, facilitatorUrl: this.facilitatorUrlForChain(), note: "polling not yet started" };
+    while (Date.now() - start < timeoutMs) {
+      last = await this.getPaymentStatus(intentId);
+      if (last.status === "settled" || last.status === "failed") return last;
+      await sleep(pollIntervalMs);
+    }
+    return last;
+  }
+
+  private facilitatorUrlForChain(): string {
+    // Day-1 nano routes everything through Circle's public mainnet facilitator.
+    return "https://gateway-api.circle.com";
   }
 
   // ── Paid endpoints (typed helpers) ────────────────────────────────────────
@@ -307,6 +417,57 @@ function isRetryable(msg: string): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Best-effort interpretation of Circle's (hypothetical) status response. We
+ * cover the most likely shapes — the actual API isn't documented yet, so this
+ * is forward-compatible scaffolding. Once Circle publishes the spec, narrow
+ * this function to the real shape.
+ */
+function interpretCircleStatus(
+  intentId: string,
+  body: Record<string, unknown>,
+): PaymentStatus {
+  const data = (body.data && typeof body.data === "object" ? body.data : body) as Record<string, unknown>;
+  const status = String(data.status ?? data.state ?? "").toLowerCase();
+  const txHash =
+    (data.transactionHash as string | undefined) ??
+    (data.transaction as string | undefined) ??
+    (data.txHash as string | undefined) ??
+    (data.onchainTx as string | undefined);
+  const settledAt =
+    (data.settledAt as string | undefined) ??
+    (data.completedAt as string | undefined);
+  const reason =
+    (data.reason as string | undefined) ??
+    (data.errorReason as string | undefined) ??
+    (data.error as string | undefined);
+
+  if (
+    status === "settled" ||
+    status === "completed" ||
+    status === "succeeded" ||
+    status === "complete" ||
+    txHash
+  ) {
+    return {
+      status: "settled",
+      intentId,
+      ...(txHash ? { transactionHash: txHash } : {}),
+      ...(settledAt ? { settledAt } : {}),
+      raw: body,
+    };
+  }
+  if (status === "failed" || status === "error" || status === "rejected") {
+    return { status: "failed", intentId, ...(reason ? { reason } : {}), raw: body };
+  }
+  return {
+    status: "pending",
+    intentId,
+    facilitatorUrl: "https://gateway-api.circle.com",
+    note: `Circle returned status="${status}" — still queued for batch settlement.`,
+  };
 }
 
 // =============================================================================

@@ -1,6 +1,6 @@
 {
   "name": "@blockrun/nano-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript client for blockrun-nano: Circle Gateway batched USDC payments → BlockRun's full AI model catalog across Polygon, Arbitrum, Optimism, Unichain.",
   "license": "Apache-2.0",
   "author": "BlockRun",
