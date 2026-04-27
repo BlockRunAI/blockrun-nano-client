@@ -34,6 +34,29 @@ export const NANO_TESTNET_URL = "https://testnet-nano.blockrun.ai";
 export const NANO_MAINNET_DIRECT_URL =
   "https://blockrun-nano-1092497648280.us-central1.run.app";
 
+/**
+ * Recommended public RPCs per chain. The default RPCs that ship with
+ * `@circle-fin/x402-batching`'s CHAIN_CONFIGS are often rate-limited or stale
+ * (e.g. polygon defaults to `poly.api.pocket.network` which routinely
+ * returns 401 / lags blocks). When a buyer doesn't pass `rpcUrl` to
+ * `NanoClient`, we fall back to one of these per chain.
+ *
+ * Override per chain via env: e.g. `RPC_URL_POLYGON=...`. For production,
+ * use your own Alchemy / QuickNode / Infura key.
+ */
+export const RECOMMENDED_RPC_URLS: Partial<Record<SupportedChainName, string>> = {
+  polygon: "https://1rpc.io/matic",
+  arbitrum: "https://arbitrum.llamarpc.com",
+  optimism: "https://optimism.llamarpc.com",
+  unichain: "https://unichain.drpc.org",
+  base: "https://base.llamarpc.com",
+  // testnets — Circle Gateway sandbox
+  polygonAmoy: "https://rpc-amoy.polygon.technology",
+  arbitrumSepolia: "https://sepolia-rollup.arbitrum.io/rpc",
+  optimismSepolia: "https://sepolia.optimism.io",
+  unichainSepolia: "https://sepolia.unichain.org",
+};
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -137,10 +160,11 @@ export class NanoClient {
   readonly maxRetries: number;
 
   constructor(config: NanoClientConfig) {
+    const rpcUrl = config.rpcUrl ?? RECOMMENDED_RPC_URLS[config.chain];
     this.gateway = new GatewayClient({
       chain: config.chain,
       privateKey: config.privateKey,
-      ...(config.rpcUrl ? { rpcUrl: config.rpcUrl } : {}),
+      ...(rpcUrl ? { rpcUrl } : {}),
     });
     this.baseUrl = (config.baseUrl ?? NANO_MAINNET_URL).replace(/\/+$/, "");
     this.chain = config.chain;

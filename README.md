@@ -122,6 +122,30 @@ const client = new NanoClient({
 });
 ```
 
+## RPC
+
+If you don't pass `rpcUrl`, the client uses a **vetted public RPC** per chain
+from `RECOMMENDED_RPC_URLS` — needed because `@circle-fin/x402-batching`'s
+default RPCs are often rate-limited or stale (e.g. Polygon defaults to
+`poly.api.pocket.network` which routinely returns 401).
+
+| Chain | Default RPC used |
+|---|---|
+| `polygon` | `https://1rpc.io/matic` |
+| `arbitrum` | `https://arbitrum.llamarpc.com` |
+| `optimism` | `https://optimism.llamarpc.com` |
+| `unichain` | `https://unichain.drpc.org` |
+
+For production traffic, **use your own RPC key** (Alchemy / QuickNode / Infura):
+
+```ts
+const client = new NanoClient({
+  chain: "polygon",
+  privateKey: "0x...",
+  rpcUrl: "https://polygon-mainnet.g.alchemy.com/v2/YOUR-KEY",
+});
+```
+
 ## End-to-end test
 
 ```bash
