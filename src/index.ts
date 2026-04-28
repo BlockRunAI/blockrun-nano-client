@@ -239,46 +239,54 @@ export class NanoClient {
   // ── Payment intent tracking ──────────────────────────────────────────────
 
   /**
-   * Best-effort lookup of a Circle Gateway nanopayment intent's status.
+   * Look up a Circle Gateway nanopayment intent's status.
    *
-   * Circle Gateway SDK v3.0.x does not yet expose a public payment-status
-   * endpoint. This method probes a handful of likely URL paths on the
-   * mainnet facilitator (`gateway-api.circle.com`); when none answer, it
-   * returns `{ status: "unknown" }` with an explanatory note. Once Circle
-   * ships an official endpoint, this method will start returning real status
-   * without a code change on the buyer side.
+   * Hits `GET https://gateway-api.circle.com/v1/x402/transfers/{id}`, which
+   * returns the full transfer record including `status`, `fromAddress`,
+   * `toAddress`, `amount`, `createdAt`, `updatedAt`.
+   *
+   * Note (2026-04): Circle's `status: "completed"` indicates the facilitator
+   * has internally settled the intent — but the corresponding on-chain ERC-20
+   * Transfer to the seller's `payTo` address may still be pending if the
+   * seller's queue hasn't been swept on-chain yet. Treat the on-chain
+   * `Transfer(from=GatewayWallet|GatewayMinter, to=payTo)` event as the
+   * definitive settlement signal.
    *
    * @param intentId  the UUID returned in `PaymentReceipt.transaction`
-   *                  (which is `BatchFacilitatorClient.settle()`'s
-   *                  `transaction` field for batched payments)
+   *                  (= `BatchFacilitatorClient.settle()`'s `transaction`)
    */
   async getPaymentStatus(intentId: string): Promise<PaymentStatus> {
     const facilitatorUrl = this.facilitatorUrlForChain();
-    const candidates = [
-      `${facilitatorUrl}/v1/x402/intents/${encodeURIComponent(intentId)}`,
-      `${facilitatorUrl}/v1/x402/payments/${encodeURIComponent(intentId)}`,
-      `${facilitatorUrl}/v1/x402/jobs/${encodeURIComponent(intentId)}`,
-      `${facilitatorUrl}/v1/x402/status/${encodeURIComponent(intentId)}`,
-    ];
-
-    for (const url of candidates) {
-      try {
-        const r = await fetch(url, { method: "GET" });
-        if (r.status === 404) continue;
-        if (!r.ok) continue;
-        const body = (await r.json()) as Record<string, unknown>;
-        return interpretCircleStatus(intentId, body);
-      } catch {
-        /* try next candidate */
+    const url = `${facilitatorUrl}/v1/x402/transfers/${encodeURIComponent(intentId)}`;
+    try {
+      const r = await fetch(url, { method: "GET" });
+      if (r.status === 404) {
+        return {
+          status: "unknown",
+          intentId,
+          facilitatorUrl,
+          note: "Circle returned 404 — intent not found. Either the ID is wrong or it hasn't been registered yet.",
+        };
       }
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        return {
+          status: "unknown",
+          intentId,
+          facilitatorUrl,
+          note: `Circle returned HTTP ${r.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const body = (await r.json()) as Record<string, unknown>;
+      return interpretCircleStatus(intentId, body);
+    } catch (err) {
+      return {
+        status: "unknown",
+        intentId,
+        facilitatorUrl,
+        note: `Network error querying Circle: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
-
-    return {
-      status: "unknown",
-      intentId,
-      facilitatorUrl,
-      note: "Circle Gateway has not published a public payment-status endpoint as of @circle-fin/x402-batching@3.0.x. We probed /v1/x402/{intents,payments,jobs,status}/<id> and got no match. On-chain settlement is the only reliable signal today — watch for ERC-20 Transfer(from=GatewayWallet, to=payTo) events on the buyer's chain.",
-    };
   }
 
   /**
@@ -425,32 +433,32 @@ function sleep(ms: number): Promise<void> {
  * is forward-compatible scaffolding. Once Circle publishes the spec, narrow
  * this function to the real shape.
  */
+/**
+ * Map Circle's `/v1/x402/transfers/{id}` response onto our PaymentStatus.
+ *
+ * Real response shape (verified 2026-04-28):
+ *   { id, status: "completed" | "pending" | ..., token, sendingNetwork,
+ *     recipientNetwork, fromAddress, toAddress, amount, createdAt, updatedAt }
+ *
+ * Caveat: `status: "completed"` from Circle means internally settled — does
+ * NOT guarantee an on-chain Transfer to `toAddress` has been mined yet for
+ * fresh seller addresses or sub-threshold amounts. Watch for the on-chain
+ * Transfer event as the definitive signal.
+ */
 function interpretCircleStatus(
   intentId: string,
   body: Record<string, unknown>,
 ): PaymentStatus {
-  const data = (body.data && typeof body.data === "object" ? body.data : body) as Record<string, unknown>;
-  const status = String(data.status ?? data.state ?? "").toLowerCase();
+  const status = String(body.status ?? "").toLowerCase();
   const txHash =
-    (data.transactionHash as string | undefined) ??
-    (data.transaction as string | undefined) ??
-    (data.txHash as string | undefined) ??
-    (data.onchainTx as string | undefined);
+    (body.transactionHash as string | undefined) ??
+    (body.onchainTx as string | undefined);
   const settledAt =
-    (data.settledAt as string | undefined) ??
-    (data.completedAt as string | undefined);
-  const reason =
-    (data.reason as string | undefined) ??
-    (data.errorReason as string | undefined) ??
-    (data.error as string | undefined);
+    (body.updatedAt as string | undefined) ??
+    (body.settledAt as string | undefined) ??
+    (body.completedAt as string | undefined);
 
-  if (
-    status === "settled" ||
-    status === "completed" ||
-    status === "succeeded" ||
-    status === "complete" ||
-    txHash
-  ) {
+  if (status === "completed" || status === "settled" || status === "succeeded") {
     return {
       status: "settled",
       intentId,
@@ -460,13 +468,18 @@ function interpretCircleStatus(
     };
   }
   if (status === "failed" || status === "error" || status === "rejected") {
-    return { status: "failed", intentId, ...(reason ? { reason } : {}), raw: body };
+    return {
+      status: "failed",
+      intentId,
+      reason: String(body.reason ?? body.errorReason ?? body.error ?? "unknown"),
+      raw: body,
+    };
   }
   return {
     status: "pending",
     intentId,
     facilitatorUrl: "https://gateway-api.circle.com",
-    note: `Circle returned status="${status}" — still queued for batch settlement.`,
+    note: `Circle returned status="${status}" — still queued.`,
   };
 }
 
