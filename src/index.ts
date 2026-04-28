@@ -17,6 +17,7 @@
 
 import {
   GatewayClient,
+  GATEWAY_DOMAINS,
   type SupportedChainName,
 } from "@circle-fin/x402-batching/client";
 import type { Hex } from "viem";
@@ -425,6 +426,80 @@ function isRetryable(msg: string): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// =============================================================================
+// Standalone Gateway-balance query (no private key required)
+// =============================================================================
+
+/**
+ * Query a seller's Circle Gateway balance on a given chain.
+ *
+ * Per Circle's status flow, when a payment intent reaches `Completed`, the
+ * funds are credited to the seller's **Gateway balance** — not yet on-chain
+ * in their wallet. The seller (or anyone with this read-only endpoint) can
+ * inspect that balance for any address without needing a private key.
+ *
+ * Use {@link NanoClient.withdraw} (with the seller's private key) to mint the
+ * balance to an on-chain wallet on any Gateway-supported chain.
+ *
+ * @example
+ * ```ts
+ * import { querySellerGatewayBalance } from "@blockrun/nano-client";
+ * const b = await querySellerGatewayBalance(
+ *   "0xe9030014F5DAe217d0A152f02A043567b16c1aBf",
+ *   "polygon",
+ * );
+ * console.log(b.available); // "0.057000"
+ * ```
+ */
+export async function querySellerGatewayBalance(
+  address: string,
+  chain: SupportedChainName,
+  opts: { facilitatorUrl?: string } = {},
+): Promise<{
+  available: string;
+  withdrawing?: string;
+  withdrawable?: string;
+  raw: unknown;
+}> {
+  const domain = GATEWAY_DOMAINS[chain];
+  if (domain === undefined) {
+    throw new Error(`Unknown chain: ${chain}`);
+  }
+  const baseUrl = opts.facilitatorUrl ?? "https://gateway-api.circle.com";
+  const url = `${baseUrl}/v1/balances`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: "USDC",
+      sources: [{ depositor: address, domain }],
+    }),
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`Circle balance query failed: HTTP ${r.status} ${text}`);
+  }
+  const body = (await r.json()) as {
+    balances?: Array<{
+      depositor: string;
+      domain: number;
+      balance: string;
+      withdrawing?: string;
+      withdrawable?: string;
+    }>;
+  };
+  const entry = body.balances?.[0];
+  if (!entry) {
+    return { available: "0", raw: body };
+  }
+  return {
+    available: entry.balance,
+    ...(entry.withdrawing ? { withdrawing: entry.withdrawing } : {}),
+    ...(entry.withdrawable ? { withdrawable: entry.withdrawable } : {}),
+    raw: body,
+  };
 }
 
 /**

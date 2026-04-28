@@ -46,6 +46,33 @@ await client.withdraw("2");                         // Gateway → wallet (insta
 await client.withdraw("2", { chain: "base" });      // Cross-chain via CCTP (~13 min)
 ```
 
+### Seller-side: where do my paid funds end up?
+
+Per Circle Gateway's status flow, when a payment intent reaches `Completed`,
+the funds land in the **seller's Circle Gateway available balance** — not yet
+on-chain in the seller's wallet. The seller mints to their wallet on whichever
+chain they want (instant, single tx).
+
+Query a seller's Gateway balance — no private key required:
+
+```ts
+import { querySellerGatewayBalance } from "@blockrun/nano-client";
+
+const b = await querySellerGatewayBalance(
+  "0xe9030014F5DAe217d0A152f02A043567b16c1aBf",  // seller payTo
+  "polygon",
+);
+console.log(b.available); // "0.057000" — sitting in Circle Gateway, ready to mint
+```
+
+To mint to wallet (seller-side, requires seller's private key):
+
+```ts
+const sellerClient = new NanoClient({ chain: "polygon", privateKey: SELLER_KEY });
+await sellerClient.withdraw("5");                        // → wallet on Polygon
+await sellerClient.withdraw("5", { chain: "base" });     // → wallet on Base via CCTP (~13 min)
+```
+
 ### Payment intent tracking
 
 Every paid call returns `payment.transaction` — Circle's nanopayment intent UUID.
