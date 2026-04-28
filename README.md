@@ -1,8 +1,35 @@
 # @blockrun/nano-client
 
-TypeScript client for [blockrun-nano](https://nano.blockrun.ai) — pay BlockRun's
-full AI model catalog with **gas-free batched USDC** via Circle Gateway, on
-Polygon, Arbitrum, Optimism, or Unichain mainnet.
+> TypeScript SDK for [nano.blockrun.ai](https://nano.blockrun.ai) — pay-per-request access to **80+ AI models** (GPT-5.x, Claude 4.x, Gemini 3.x, DeepSeek, Grok, NVIDIA free-tier, GLM, MiniMax, Moonshot…) plus image / video / music / search / X-Twitter intelligence / Pyth-backed market data — all settled with **gas-free batched USDC** via Circle Gateway. No API keys required; your wallet signature is your authentication. Built for AI agents that need to operate autonomously across **Polygon / Arbitrum / Optimism / Unichain** mainnet.
+
+[![npm](https://img.shields.io/npm/v/@blockrun/nano-client.svg)](https://www.npmjs.com/package/@blockrun/nano-client)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+**Sister SDKs:** [`blockrun-llm`](https://pypi.org/project/blockrun-llm/) (Python, Base / Solana) · this package = mirror for Circle Gateway batched payments on multi-chain EVM.
+
+---
+
+## Why nano
+
+| | Native x402 (e.g. `blockrun.ai` on Base) | **`nano.blockrun.ai` via Circle Gateway** |
+|---|---|---|
+| Buyer chain options | Base only | Polygon / Arbitrum / Optimism / Unichain |
+| First call setup | Have USDC + ETH on Base | Deposit once into Circle Gateway (one tx) |
+| Per-call gas (buyer) | Yes (~$0.01–0.05) | **Zero** (off-chain EIP-712 signature) |
+| Settlement | Synchronous on-chain | Batched ~every 15 min on Polygon |
+| Best for | One-off calls | High-frequency AI agents, long-running sessions |
+
+## Supported chains
+
+| Chain | `SupportedChainName` | Status |
+|---|---|---|
+| Polygon | `polygon` | ✅ Day-1 |
+| Arbitrum | `arbitrum` | ✅ Day-1 |
+| OP Mainnet | `optimism` | ✅ Day-1 |
+| Unichain | `unichain` | ✅ Day-1 |
+| HyperEVM, Sei, Sonic, Avalanche, WorldChain, Ethereum | various | Roadmap (Circle Gateway already supports all 11; nano just hasn't enabled them server-side yet) |
+
+> **Base** is intentionally not in nano — buyers on Base should use [`blockrun.ai`](https://blockrun.ai) (native x402, no Gateway deposit step required).
 
 ## Install
 
@@ -22,69 +49,238 @@ const client = new NanoClient({
   privateKey: process.env.PRIVATE_KEY as `0x${string}`,
 });
 
-// One-time: deposit USDC into Circle Gateway
-await client.deposit("5");                          // $5 USDC
+// One-time: move USDC from your wallet into Circle Gateway escrow
+await client.deposit("5");                                // $5 covers ~5,000 calls @ $0.001
 
-// Unlimited paid calls (zero gas per call)
+// From here, every call is offchain EIP-712 signature → zero gas
 const r = await client.chat({
   model: "openai/gpt-4o-mini",
   messages: [{ role: "user", content: "Hello!" }],
 });
 console.log(r.data.choices[0].message.content);
-console.log(r.payment.formattedAmount);             // "$0.001000"
+console.log(r.payment.formattedAmount);                   // "$0.001000"
 ```
 
-## Methods
-
-### Wallet / Gateway management
+For an even-shorter shape:
 
 ```ts
-client.address;                                     // 0x... derived from privateKey
-await client.getBalances();                         // wallet + Gateway, on configured chain
-await client.deposit("5");                          // wallet → Circle Gateway escrow
-await client.withdraw("2");                         // Gateway → wallet (instant, same chain)
-await client.withdraw("2", { chain: "base" });      // Cross-chain via CCTP (~13 min)
+const reply = await client.ask("openai/gpt-4o-mini", "What is 2+2?");
+console.log(reply);                                       // "4"
 ```
 
-### Seller-side: where do my paid funds end up?
+---
 
-Per Circle Gateway's status flow, when a payment intent reaches `Completed`,
-the funds land in the **seller's Circle Gateway available balance** — not yet
-on-chain in the seller's wallet. The seller mints to their wallet on whichever
-chain they want (instant, single tx).
+## Configuration
 
-Query a seller's Gateway balance — no private key required:
+```ts
+const client = new NanoClient({
+  privateKey: "0x...",                                    // required (Hex)
+  chain: "polygon",                                       // required
+  baseUrl: "https://nano.blockrun.ai",                    // default
+  rpcUrl: "https://polygon-mainnet.g.alchemy.com/v2/KEY", // optional override
+  maxRetries: 2,                                          // default
+});
+```
+
+If `rpcUrl` is omitted, the SDK uses a vetted public RPC per chain from
+`RECOMMENDED_RPC_URLS` (Polygon → 1rpc.io, Arb/Op → llamarpc, Unichain →
+drpc). Override for production.
+
+While DNS for `nano.blockrun.ai` settles, point at the Cloud Run URL:
+
+```ts
+import { NanoClient, NANO_MAINNET_DIRECT_URL } from "@blockrun/nano-client";
+const client = new NanoClient({ chain: "polygon", privateKey, baseUrl: NANO_MAINNET_DIRECT_URL });
+```
+
+---
+
+## Chat
+
+### OpenAI-compatible chat
+
+```ts
+const r = await client.chat({
+  model: "anthropic/claude-haiku-4.5",
+  messages: [
+    { role: "system", content: "You answer in one sentence." },
+    { role: "user", content: "Explain MEV." },
+  ],
+  max_tokens: 200,
+});
+```
+
+### Simple `ask(model, prompt)`
+
+```ts
+const reply = await client.ask("openai/gpt-4o-mini", "List 3 EVM rollups");
+```
+
+### Smart routing (ClawRouter)
+
+Let nano pick the cheapest capable model based on a 14-dimension classifier:
+
+```ts
+const r = await client.smartChat({ prompt: "What is 2+2?" });
+console.log(r.data.model);                                // "moonshot/kimi-k2.5"
+
+const hard = await client.smartChat({
+  prompt: "Prove the Riemann hypothesis step by step",
+  routing_profile: "premium",
+});
+console.log(hard.data.model);                             // "openai/gpt-5.4"
+```
+
+| `routing_profile` | Behaviour |
+|---|---|
+| `"free"` | NVIDIA free-tier models only (zero cost) |
+| `"eco"` | Cheapest capable model per tier (DeepSeek, NVIDIA) |
+| `"auto"` *(default)* | Best balance of cost / quality |
+| `"premium"` | Top-tier (OpenAI, Anthropic) |
+
+---
+
+## Image generation
+
+```ts
+const r = await client.images.generate({
+  model: "openai/dall-e-3",
+  prompt: "A cat coding TypeScript at sunset, isometric voxel art",
+  size: "1024x1024",
+});
+console.log(r.data);                                      // OpenAI-compatible response
+```
+
+Image-to-image edit:
+
+```ts
+const r = await client.images.edit({
+  model: "google/nano-banana",
+  prompt: "Make the sky purple",
+  image: "data:image/png;base64,…",
+});
+```
+
+---
+
+## Video & music
+
+```ts
+const job = await client.videos.generate({
+  model: "minimax/video-01",
+  prompt: "A red apple slowly rotating on a wooden table",
+  duration: 6,
+});
+const status = await client.videos.status(job.data.id);   // poll until ready
+
+const m = await client.music.generate({
+  prompt: "Lo-fi hip hop, soft piano, rainy night",
+  duration: 30,
+});
+```
+
+---
+
+## Search
+
+```ts
+const r = await client.search({ query: "latest Solana TVL changes this week" });
+```
+
+---
+
+## X / Twitter intelligence
+
+Powered by AttentionVC. All methods return `{ data, payment }` — typed
+generic so you can pass your own response shape.
+
+```ts
+const profile = await client.x.userInfo("vitalikbuterin");
+const followers = await client.x.followers("vitalikbuterin", { cursor: "..." });
+const search = await client.x.search("blockrun OR x402", { query_type: "Latest" });
+const trending = await client.x.trending();
+const tweet = await client.x.tweetLookup("1234567890123456789");
+const thread = await client.x.tweetThread("1234567890123456789");
+const mentions = await client.x.userMentions("vitalikbuterin");
+const articles = await client.x.articlesRising();
+```
+
+Full method list:
+
+| Method | Notes |
+|---|---|
+| `client.x.userLookup(usernames)` | Profile lookup, single or batch |
+| `client.x.userInfo(username)` | Single profile + intel layer |
+| `client.x.followers(username, {cursor?})` | $0.05/page (~200 accounts) |
+| `client.x.followings(username, {cursor?})` | |
+| `client.x.verifiedFollowers(username, {cursor?})` | |
+| `client.x.userTweets(username, {cursor?, limit?})` | |
+| `client.x.userMentions(username, {cursor?, limit?})` | |
+| `client.x.tweetLookup(tweetIds)` | Single or batch |
+| `client.x.tweetReplies(tweetId, {cursor?})` | |
+| `client.x.tweetThread(tweetId, {cursor?})` | |
+| `client.x.search(query, {query_type?, cursor?})` | $0.032/page |
+| `client.x.trending()` | |
+| `client.x.articlesRising()` | |
+
+---
+
+## Pyth-backed price + Predexon markets
+
+```ts
+const px = await client.price.price("BTC/USD");
+const hist = await client.price.history("ETH/USD", { range: "7d", resolution: "1h" });
+const market = await client.price.pm("polymarket", { id: "..." });
+```
+
+---
+
+## Wallet & Gateway management
+
+```ts
+client.address;                                            // 0x... derived from privateKey
+await client.getBalances();                                // wallet + Gateway, on configured chain
+await client.deposit("5");                                 // wallet → Circle Gateway escrow
+await client.withdraw("2");                                // Gateway → wallet (instant, same chain)
+await client.withdraw("2", { chain: "base" });             // Cross-chain via CCTP (~13 min)
+```
+
+### Where do my paid funds end up? (seller-side)
+
+When a payment intent reaches `Completed`, funds land in the **seller's
+Circle Gateway available balance** — not directly in their wallet. The
+seller mints to their wallet on whichever chain they want.
+
+Query a seller's Gateway balance — read-only, no private key:
 
 ```ts
 import { querySellerGatewayBalance } from "@blockrun/nano-client";
 
 const b = await querySellerGatewayBalance(
-  "0xe9030014F5DAe217d0A152f02A043567b16c1aBf",  // seller payTo
+  "0xe9030014F5DAe217d0A152f02A043567b16c1aBf",            // seller payTo
   "polygon",
 );
-console.log(b.available); // "0.057000" — sitting in Circle Gateway, ready to mint
+console.log(b.available);                                  // "0.057000"
 ```
 
 To mint to wallet (seller-side, requires seller's private key):
 
 ```ts
-const sellerClient = new NanoClient({ chain: "polygon", privateKey: SELLER_KEY });
-await sellerClient.withdraw("5");                        // → wallet on Polygon
-await sellerClient.withdraw("5", { chain: "base" });     // → wallet on Base via CCTP (~13 min)
+const seller = new NanoClient({ chain: "polygon", privateKey: SELLER_KEY });
+await seller.withdraw("5");                                // → wallet on Polygon
+await seller.withdraw("5", { chain: "base" });             // → wallet on Base via CCTP
 ```
 
-### Payment intent tracking
+---
+
+## Payment intent tracking
 
 Every paid call returns `payment.transaction` — Circle's nanopayment intent UUID.
-On-chain settlement is async (Circle batches the seller's queue).
 
 ```ts
 const r = await client.chat({ ... });
 const status = await client.getPaymentStatus(r.payment.transaction);
-// { status: "settled", transactionHash: "0x...", settledAt: "..." }
-//   — once Circle publishes an intent-status API
-// { status: "unknown", note: "Circle hasn't shipped this endpoint yet" }
-//   — until then; watch on-chain Transfer events on payTo as the source of truth
+// → { status: "settled", settledAt: "2026-04-27T23:06:08.267Z" }
 
 // Or block until terminal state:
 const final = await client.waitForSettlement(r.payment.transaction, {
@@ -93,134 +289,91 @@ const final = await client.waitForSettlement(r.payment.transaction, {
 });
 ```
 
-Note (2026-04): Circle Gateway SDK v3.0.x exposes only `verify` / `settle` /
-`supported`. The SDK probes likely status URLs and falls back to `unknown`
-until Circle ships an official endpoint — at which point this method starts
-returning real data without a buyer-side code change.
+Status flow (per Circle's docs):
 
-### Paid endpoints
+| Status | Meaning |
+|---|---|
+| `Received` | Verified, queued for next batch |
+| `Batched` | On-chain batching in progress |
+| `Confirmed` | Batch tx submitted on-chain |
+| `Completed` | Batch finalised → seller's Circle Gateway balance increased |
+
+---
+
+## Spending tracker
+
+Every paid call increments an in-process counter:
 
 ```ts
-// Chat completions (OpenAI compatible)
-const r = await client.chat({
-  model: "anthropic/claude-haiku-4.5",
-  messages: [{ role: "user", content: "..." }],
-  max_tokens: 1024,
-});
+const s = client.getSpending();
+console.log(`Spent $${s.total_usd.toFixed(4)} across ${s.calls} calls`);
+console.log(s.by_endpoint);                               // { "/v1/chat": {...}, "/v1/x/users": {...} }
 
-// Streaming chat
-for await (const chunk of client.chatStream({
-  model: "openai/gpt-4o-mini",
-  messages: [...],
-})) {
-  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
-}
+client.resetSpending();                                   // reset for the next session
+```
 
-// Image generation
-const img = await client.images({
-  model: "openai/dall-e-3",
-  prompt: "A cat coding TypeScript",
-  size: "1024x1024",
-});
+---
 
-// Search
-const search = await client.search({ query: "latest Solana TVL" });
+## Generic raw call
 
-// X / Twitter
-const user = await client.xUserInfo("vitalikbuterin");
+For endpoints not covered by typed helpers:
 
-// Generic — any nano paid route
-const audio = await client.call("/api/v1/audio/generations", {
+```ts
+const r = await client.call("/api/v1/audio/generations", {
   method: "POST",
   body: { model: "openai/tts-1", voice: "alloy", input: "Hello" },
 });
 ```
 
-Every paid call returns `{ data, payment }`:
+---
 
-```ts
-{
-  data: <typed response>,
-  payment: {
-    transaction: "batch_abc123...",        // Circle batch ID; resolves to onchain tx ~hourly
-    network: "eip155:137",                 // CAIP-2 of the chain used
-    formattedAmount: "$0.001000",
-    amount: "1000",                        // micro-USDC
-  }
-}
-```
-
-## Configuration
-
-```ts
-const client = new NanoClient({
-  privateKey: "0x...",                      // required
-  chain: "polygon",                         // required: polygon | arbitrum | optimism | unichain
-  baseUrl: "https://nano.blockrun.ai",      // default
-  rpcUrl: "https://polygon-mainnet.g.alchemy.com/v2/KEY",  // optional
-  maxRetries: 2,                            // default
-});
-```
-
-For testing against the Cloud Run direct URL while DNS is being set up:
-
-```ts
-import { NanoClient, NANO_MAINNET_DIRECT_URL } from "@blockrun/nano-client";
-
-const client = new NanoClient({
-  chain: "polygon",
-  privateKey: "0x...",
-  baseUrl: NANO_MAINNET_DIRECT_URL,
-});
-```
-
-## RPC
-
-If you don't pass `rpcUrl`, the client uses a **vetted public RPC** per chain
-from `RECOMMENDED_RPC_URLS` — needed because `@circle-fin/x402-batching`'s
-default RPCs are often rate-limited or stale (e.g. Polygon defaults to
-`poly.api.pocket.network` which routinely returns 401).
-
-| Chain | Default RPC used |
-|---|---|
-| `polygon` | `https://1rpc.io/matic` |
-| `arbitrum` | `https://arbitrum.llamarpc.com` |
-| `optimism` | `https://optimism.llamarpc.com` |
-| `unichain` | `https://unichain.drpc.org` |
-
-For production traffic, **use your own RPC key** (Alchemy / QuickNode / Infura):
-
-```ts
-const client = new NanoClient({
-  chain: "polygon",
-  privateKey: "0x...",
-  rpcUrl: "https://polygon-mainnet.g.alchemy.com/v2/YOUR-KEY",
-});
-```
-
-## End-to-end test
+## End-to-end example
 
 ```bash
-git clone <this repo>
+git clone https://github.com/BlockRunAI/blockrun-nano-client
 cd blockrun-nano-client
 pnpm install
 
-# 1) Generate a fresh test wallet
-tsx examples/print-address.ts
-# → prints CLIENT_PRIVATE_KEY=0x... and the wallet address
+# 1) Generate fresh test wallet
+pnpm exec tsx examples/print-address.ts
+# → prints CLIENT_PRIVATE_KEY=0x... and address
 
-# 2) Save the private key to .env, fund the address with $0.50 USDC + 0.05 MATIC on Polygon mainnet
+# 2) Fund that address on Polygon: 0.5 USDC + 0.05 POL
 
-# 3) Run the e2e
-tsx examples/e2e-test.ts
+# 3) Run e2e
+CLIENT_PRIVATE_KEY=0x... pnpm exec tsx examples/e2e-test.ts
 ```
 
-## See also
+---
 
-- [BlockRun Nano buyer guide (CN + EN)](https://github.com/blockrunai/blockrun-nano/blob/main/BUYER-GUIDE.md)
-- [`@circle-fin/x402-batching`](https://www.npmjs.com/package/@circle-fin/x402-batching) — underlying SDK
-- [BlockRun mainnet on Base](https://blockrun.ai)
-- [BlockRun on Solana](https://sol.blockrun.ai)
+## How it works
+
+1. Buyer deposits USDC once into Circle's `GatewayWallet` contract on chosen chain
+2. Every API call returns `402 Payment Required` with a multi-chain `accepts` array
+3. SDK signs an EIP-712 `TransferWithAuthorization` against `GatewayWallet`
+4. Server forwards to Circle's facilitator → Circle queues for batch
+5. Circle batches every ~15 min on Polygon; pushes USDC into seller's Gateway balance
+6. Seller `withdraw()`s to wallet (instant, any Gateway-supported chain)
+
+**Your private key never leaves your machine.** The SDK signs locally, only the signature is sent.
+
+---
+
+## Production tips
+
+- **Key management** — KMS / Vault, not raw `.env`
+- **RPC** — provide your own Alchemy / QuickNode key for production traffic
+- **Balance monitoring** — `await client.getBalances()` and alert when `gateway.available` drops below your threshold
+- **Retries** — built-in `maxRetries: 2` with exponential backoff handles transient 5xx; bump for high-volume agents
+- **Reconciliation** — trust `client.getBalances()` per chain over reading the chain yourself
+
+## Links
+
+- **Buyer guide (CN + EN)**: [`BUYER-GUIDE.md`](./BUYER-GUIDE.md)
+- **Server source**: [`BlockRunAI/blockrun-nano`](https://github.com/BlockRunAI/blockrun-nano)
+- **Underlying SDK**: [`@circle-fin/x402-batching`](https://www.npmjs.com/package/@circle-fin/x402-batching) (Circle)
+- **Circle Gateway docs**: https://developers.circle.com/gateway
+- **Sister SDK (Python / Base / Solana)**: [`blockrun-llm`](https://pypi.org/project/blockrun-llm/)
 
 ## License
 
