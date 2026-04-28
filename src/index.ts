@@ -40,11 +40,20 @@ export const NANO_MAINNET_DIRECT_URL =
  * `@circle-fin/x402-batching`'s CHAIN_CONFIGS are often rate-limited or stale.
  */
 export const RECOMMENDED_RPC_URLS: Partial<Record<SupportedChainName, string>> = {
+  // Mainnets accepted by nano (Base intentionally excluded — covered by blockrun.ai's native x402)
   polygon: "https://1rpc.io/matic",
   arbitrum: "https://arbitrum.llamarpc.com",
   optimism: "https://optimism.llamarpc.com",
   unichain: "https://unichain.drpc.org",
+  avalanche: "https://avalanche-c-chain-rpc.publicnode.com",
+  sonic: "https://rpc.soniclabs.com",
+  sei: "https://evm-rpc.sei-apis.com",
+  worldChain: "https://worldchain-mainnet.g.alchemy.com/public",
+  hyperEvm: "https://rpc.hyperliquid.xyz/evm",
+  ethereum: "https://eth.llamarpc.com",
+  // Base — only useful if you point baseUrl at blockrun.ai's native x402 service
   base: "https://base.llamarpc.com",
+  // Testnets
   polygonAmoy: "https://rpc-amoy.polygon.technology",
   arbitrumSepolia: "https://sepolia-rollup.arbitrum.io/rpc",
   optimismSepolia: "https://sepolia.optimism.io",

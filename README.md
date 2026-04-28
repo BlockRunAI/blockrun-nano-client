@@ -21,13 +21,20 @@
 
 ## Supported chains
 
-| Chain | `SupportedChainName` | Status |
-|---|---|---|
-| Polygon | `polygon` | ✅ Day-1 |
-| Arbitrum | `arbitrum` | ✅ Day-1 |
-| OP Mainnet | `optimism` | ✅ Day-1 |
-| Unichain | `unichain` | ✅ Day-1 |
-| HyperEVM, Sei, Sonic, Avalanche, WorldChain, Ethereum | various | Roadmap (Circle Gateway already supports all 11; nano just hasn't enabled them server-side yet) |
+All 10 mainnet chains Circle Gateway supports today (Base excluded by design):
+
+| Chain | `SupportedChainName` | Chain ID | Native gas |
+|---|---|---|---|
+| Polygon | `polygon` | 137 | POL |
+| Arbitrum | `arbitrum` | 42161 | ETH |
+| OP Mainnet | `optimism` | 10 | ETH |
+| Unichain | `unichain` | 130 | ETH |
+| Avalanche C-Chain | `avalanche` | 43114 | AVAX |
+| Sonic | `sonic` | 146 | S |
+| Sei EVM | `sei` | 1329 | SEI |
+| WorldChain | `worldChain` | 480 | ETH |
+| HyperEVM | `hyperEvm` | 999 | HYPE |
+| Ethereum | `ethereum` | 1 | ETH |
 
 > **Base** is intentionally not in nano — buyers on Base should use [`blockrun.ai`](https://blockrun.ai) (native x402, no Gateway deposit step required).
 

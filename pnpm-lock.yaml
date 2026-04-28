@@ -9,14 +9,8 @@ importers:
   .:
     dependencies:
       '@circle-fin/x402-batching':
-        specifier: ^3.0.0
+        specifier: ^3.0.2
         version: 3.0.2(@x402/core@2.11.0)(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
-      dotenv:
-        specifier: ^17.4.2
-        version: 17.4.2
-      optional:
-        specifier: ^0.1.4
-        version: 0.1.4
       viem:
         specifier: ^2.47.6
         version: 2.48.4(typescript@5.9.3)(zod@3.25.76)
@@ -30,6 +24,10 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+    optionalDependencies:
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
 
 packages:
 
@@ -266,9 +264,6 @@ packages:
     peerDependencies:
       ws: '*'
 
-  optional@0.1.4:
-    resolution: {integrity: sha512-gtvrrCfkE08wKcgXaVwQVgwEQ8vel2dc5DDBn9RLQZ3YtmtkBss6A2HY6BnJH4N/4Ku97Ri/SF8sNWE2225WJw==}
-
   ox@0.14.20:
     resolution: {integrity: sha512-rby38C3nDn8eQkf29Zgw4hkCZJ64Qqi0zRPWL8ENUQ7JVuoITqrVtwWQgM/He19SCMUEc7hS/Sjw0jIOSLJhOw==}
     peerDependencies:
@@ -437,7 +432,8 @@ snapshots:
       typescript: 5.9.3
       zod: 3.25.76
 
-  dotenv@17.4.2: {}
+  dotenv@17.4.2:
+    optional: true
 
   esbuild@0.27.7:
     optionalDependencies:
@@ -480,8 +476,6 @@ snapshots:
   isows@1.0.7(ws@8.18.3):
     dependencies:
       ws: 8.18.3
-
-  optional@0.1.4: {}
 
   ox@0.14.20(typescript@5.9.3)(zod@3.25.76):
     dependencies:
