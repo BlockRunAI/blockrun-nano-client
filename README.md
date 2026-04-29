@@ -93,12 +93,8 @@ If `rpcUrl` is omitted, the SDK uses a vetted public RPC per chain from
 `RECOMMENDED_RPC_URLS` (Polygon → 1rpc.io, Arb/Op → llamarpc, Unichain →
 drpc). Override for production.
 
-While DNS for `nano.blockrun.ai` settles, point at the Cloud Run URL:
-
-```ts
-import { NanoClient, NANO_MAINNET_DIRECT_URL } from "@blockrun/nano-client";
-const client = new NanoClient({ chain: "polygon", privateKey, baseUrl: NANO_MAINNET_DIRECT_URL });
-```
+The default `baseUrl` is `https://nano.blockrun.ai`. A `NANO_MAINNET_DIRECT_URL`
+constant is also exported for fallback during DNS / CDN incidents.
 
 ---
 

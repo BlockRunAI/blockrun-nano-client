@@ -3,7 +3,6 @@
 Pay BlockRun's full AI model catalog with **gas-free batched USDC** via Circle Gateway across **10 mainnet EVM chains**: Polygon, Arbitrum, Optimism, Unichain, Avalanche, Sonic, Sei, WorldChain, HyperEVM, Ethereum.
 
 **Endpoint** (mainnet): `https://nano.blockrun.ai`
-**Cloud Run direct** (until DNS): `https://blockrun-nano-1092497648280.us-central1.run.app`
 
 ---
 

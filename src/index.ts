@@ -32,6 +32,11 @@ import type { Hex } from "viem";
 
 export const NANO_MAINNET_URL = "https://nano.blockrun.ai";
 export const NANO_TESTNET_URL = "https://testnet-nano.blockrun.ai";
+/**
+ * Cloud Run direct URL — fallback only. Use `NANO_MAINNET_URL` for normal
+ * traffic. This stays exported so you can route around DNS / Cloudflare
+ * issues during incidents.
+ */
 export const NANO_MAINNET_DIRECT_URL =
   "https://blockrun-nano-1092497648280.us-central1.run.app";
 

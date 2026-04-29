@@ -32,12 +32,12 @@ import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
 import {
   NanoClient,
-  NANO_MAINNET_DIRECT_URL,
+  NANO_MAINNET_URL,
 } from "../src/index.js";
 
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
 const ECO_API = "https://deposit-addresses.eco.com/api/v1";
-const NANO_URL = process.env.NANO_BASE_URL ?? NANO_MAINNET_DIRECT_URL;
+const NANO_URL = process.env.NANO_BASE_URL ?? NANO_MAINNET_URL;
 const AMOUNT_USDC = process.env.AMOUNT_USDC ?? "0.10";
 const TEST_MODEL = process.env.TEST_MODEL ?? "openai/gpt-4o-mini";
 

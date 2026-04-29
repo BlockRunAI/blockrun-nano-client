@@ -21,7 +21,7 @@
 import "dotenv/config";
 import {
   NanoClient,
-  NANO_MAINNET_DIRECT_URL,
+  NANO_MAINNET_URL,
 } from "../src/index.js";
 import type { Hex } from "viem";
 
@@ -31,7 +31,7 @@ if (!PRIVATE_KEY) {
   process.exit(1);
 }
 
-const BASE_URL = process.env.NANO_BASE_URL ?? NANO_MAINNET_DIRECT_URL;
+const BASE_URL = process.env.NANO_BASE_URL ?? NANO_MAINNET_URL;
 const DEPOSIT_USDC = process.env.DEPOSIT_USDC ?? "0.10";
 const TEST_MODEL = process.env.TEST_MODEL ?? "openai/gpt-4o-mini";
 
