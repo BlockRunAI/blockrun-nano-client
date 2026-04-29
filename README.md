@@ -1,6 +1,8 @@
 # @blockrun/nano-client
 
-> TypeScript SDK for [nano.blockrun.ai](https://nano.blockrun.ai) — pay-per-request access to **80+ AI models** (GPT-5.x, Claude 4.x, Gemini 3.x, DeepSeek, Grok, NVIDIA free-tier, GLM, MiniMax, Moonshot…) plus image / video / music / search / X-Twitter intelligence / Pyth-backed market data — all settled with **gas-free batched USDC** via Circle Gateway. No API keys required; your wallet signature is your authentication. Built for AI agents that need to operate autonomously across **Polygon / Arbitrum / Optimism / Unichain** mainnet.
+> TypeScript SDK for [nano.blockrun.ai](https://nano.blockrun.ai) — pay-per-request access to **80+ AI models** (GPT-5.x, Claude 4.x, Gemini 3.x, DeepSeek, Grok, GLM, MiniMax, Moonshot…) plus image / video / music / search / X-Twitter intelligence / Pyth-backed market data — all settled with **gas-free batched USDC** via Circle Gateway. No API keys required; your wallet signature is your authentication. Built for AI agents that need to operate autonomously across **Polygon / Arbitrum / Optimism / Unichain** mainnet.
+>
+> 🆓 **Includes 8 fully-free NVIDIA-hosted models** (Qwen3, Llama 4, GLM-4.7, GPT-OSS, DeepSeek V3.2, Mistral) — zero USDC, no rate-limit gimmicks. Use `routingProfile: "free"` or call any `nvidia/*` model directly (no Gateway deposit needed for free models).
 
 [![npm](https://img.shields.io/npm/v/@blockrun/nano-client.svg)](https://www.npmjs.com/package/@blockrun/nano-client)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -74,6 +76,36 @@ For an even-shorter shape:
 const reply = await client.ask("openai/gpt-4o-mini", "What is 2+2?");
 console.log(reply);                                       // "4"
 ```
+
+### Try It Free (No USDC Required)
+
+Skip the Gateway deposit entirely — call free NVIDIA models directly:
+
+```ts
+import { NanoClient } from "@blockrun/nano-client";
+
+const client = new NanoClient({
+  chain: "polygon",
+  privateKey: process.env.PRIVATE_KEY as `0x${string}`,
+});
+
+// No deposit() call required for free models
+const reply = await client.ask("nvidia/qwen3-next-80b-a3b-thinking", "Explain x402 in 1 sentence");
+console.log(reply);
+```
+
+**Available free models** (input + output both $0, all NVIDIA-hosted, last refreshed 2026-04-21):
+
+| Model ID | Context | Speed | Best For |
+|----------|---------|-------|----------|
+| `nvidia/qwen3-next-80b-a3b-thinking` | 131K | 116 tok/s | Reasoning flagship — thinking mode |
+| `nvidia/mistral-small-4-119b` | 131K | 114 tok/s | Fastest free chat |
+| `nvidia/glm-4.7` | 131K | 237 tok/s | GLM-4.7 with thinking mode |
+| `nvidia/llama-4-maverick` | 131K | — | Meta Llama 4 Maverick MoE |
+| `nvidia/qwen3-coder-480b` | 131K | — | Coding-optimised 480B MoE |
+| `nvidia/deepseek-v3.2` | 131K | — | DeepSeek V3.2 hosted |
+| `nvidia/gpt-oss-120b` | 128K | 123 tok/s | OpenAI open-weight 120B |
+| `nvidia/gpt-oss-20b` | 128K | 155 tok/s | OpenAI open-weight 20B (smallest, fastest) |
 
 ---
 
