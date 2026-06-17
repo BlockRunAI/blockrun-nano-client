@@ -405,6 +405,12 @@ CLIENT_PRIVATE_KEY=0x... pnpm exec tsx examples/e2e-test.ts
 - **Retries** — built-in `maxRetries: 2` with exponential backoff handles transient 5xx; bump for high-volume agents
 - **Reconciliation** — trust `client.getBalances()` per chain over reading the chain yourself
 
+## Documentation
+
+- **Full docs**: https://blockrun.ai/docs
+- **Gateways & networks** (incl. the nano / Circle Gateway gateway): https://blockrun.ai/docs/x402/endpoints
+- **All BlockRun SDKs & APIs**: https://blockrun.ai/docs
+
 ## Links
 
 - **Buyer guide (CN + EN)**: [`BUYER-GUIDE.md`](./BUYER-GUIDE.md)
