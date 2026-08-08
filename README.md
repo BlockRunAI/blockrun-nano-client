@@ -1,6 +1,6 @@
 # @blockrun/nano-client
 
-> TypeScript SDK for [nano.blockrun.ai](https://nano.blockrun.ai) — pay-per-request access to **<!-- br:models.totalVisible -->92<!-- /br:models.totalVisible --> AI models** (GPT-5.x, Claude 4.x, Gemini 3.x, DeepSeek, Grok, GLM, MiniMax, Moonshot…) plus image / video / music / search / X-Twitter intelligence / Pyth-backed market data — all settled with **gas-free batched USDC** via Circle Gateway. No API keys required; your wallet signature is your authentication. Built for AI agents that need to operate autonomously across **Polygon / Arbitrum / Optimism / Unichain** mainnet.
+> TypeScript SDK for [nano.blockrun.ai](https://nano.blockrun.ai) — pay-per-request access to **<!-- br:models.totalVisible -->93<!-- /br:models.totalVisible --> AI models** (GPT-5.x, Claude 4.x, Gemini 3.x, DeepSeek, Grok, GLM, MiniMax, Moonshot…) plus image / video / music / search / X-Twitter intelligence / Pyth-backed market data — all settled with **gas-free batched USDC** via Circle Gateway. No API keys required; your wallet signature is your authentication. Built for AI agents that need to operate autonomously across **Polygon / Arbitrum / Optimism / Unichain** mainnet.
 >
 > 🆓 **Includes 9 fully-free NVIDIA-hosted models** — DeepSeek V4 Pro/Flash (1M context), Nemotron Nano Omni (vision), Qwen3, Llama 4, GLM-4.7, Mistral. Zero USDC, no rate-limit gimmicks. Use `routingProfile: "free"` or call any `nvidia/*` model directly (no Gateway deposit needed for free models).
 
