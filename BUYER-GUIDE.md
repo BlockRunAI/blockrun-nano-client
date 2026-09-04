@@ -1,5 +1,9 @@
 # BlockRun Nano — Buyer Guide
 
+For account billing, [register](https://user.blockrun.ai), [create a key](https://user.blockrun.ai/dashboard/keys), and [add credits](https://user.blockrun.ai/dashboard/credits). Use `BlockRunAccountClient` with `BLOCKRUN_API_KEY`; see the [account quick start](README.md#account-api-quick-start) for release availability and examples. This mode needs no wallet or deposit.
+
+For native wallet billing, choose [Solana](https://sol.blockrun.ai) first or [Base](https://blockrun.ai) with the [main SDK](https://github.com/BlockRunAI/blockrun-llm-ts). The remaining guide covers Circle Gateway EVM billing.
+
 Pay BlockRun's full AI model catalog with **gas-free batched USDC** via Circle Gateway across **10 mainnet EVM chains**: Polygon, Arbitrum, Optimism, Unichain, Avalanche, Sonic, Sei, WorldChain, HyperEVM, Ethereum.
 
 **Endpoint** (mainnet): `https://nano.blockrun.ai`

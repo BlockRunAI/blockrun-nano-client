@@ -1,25 +1,69 @@
 # @blockrun/nano-client
 
-> TypeScript SDK for [nano.blockrun.ai](https://nano.blockrun.ai) — pay-per-request access to **<!-- br:models.totalVisible -->100<!-- /br:models.totalVisible --> AI models** (GPT-5.x, Claude 4.x, Gemini 3.x, DeepSeek, Grok, GLM, MiniMax, Moonshot…) plus image / video / music / search / X-Twitter intelligence / Pyth-backed market data — all settled with **gas-free batched USDC** via Circle Gateway. No API keys required; your wallet signature is your authentication. Built for AI agents that need to operate autonomously across **Polygon / Arbitrum / Optimism / Unichain** mainnet.
->
-> 🆓 **Includes 9 fully-free NVIDIA-hosted models** — DeepSeek V4 Pro/Flash (1M context), Nemotron Nano Omni (vision), Qwen3, Llama 4, GLM-4.7, Mistral. Zero USDC, no rate-limit gimmicks. Use `routingProfile: "free"` or call any `nvidia/*` model directly (no Gateway deposit needed for free models).
+> TypeScript access to BlockRun with an account API key or Circle Gateway batched USDC. Chat, streaming, image, video, music, speech, search, X and market-data routes use the same account transport.
 
 [![npm](https://img.shields.io/npm/v/@blockrun/nano-client.svg)](https://www.npmjs.com/package/@blockrun/nano-client)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Sister SDKs:** [`blockrun-llm`](https://pypi.org/project/blockrun-llm/) (Python, Base / Solana) · this package = mirror for Circle Gateway batched payments on multi-chain EVM.
+**Sister SDKs:** [`blockrun-llm`](https://pypi.org/project/blockrun-llm/) (Python, Solana / Base) · this package = mirror for Circle Gateway batched payments on multi-chain EVM.
 
 ---
 
-## Why nano
+## Account API quick start
 
-| | Native x402 (e.g. `blockrun.ai` on Base) | **`nano.blockrun.ai` via Circle Gateway** |
-|---|---|---|
-| Buyer chain options | Base only | Polygon / Arbitrum / Optimism / Unichain |
-| First call setup | Have USDC + ETH on Base | Deposit once into Circle Gateway (one tx) |
-| Per-call gas (buyer) | Yes (~$0.01–0.05) | **Zero** (off-chain EIP-712 signature) |
-| Settlement | Synchronous on-chain | Batched ~every 15 min on Polygon |
-| Best for | One-off calls | High-frequency AI agents, long-running sessions |
+[Register at BlockRun](https://user.blockrun.ai), [create an API key](https://user.blockrun.ai/dashboard/keys), and [add credits](https://user.blockrun.ai/dashboard/credits). Keep the key in your server environment; never bundle it into a browser app.
+
+The account client below is included in this source branch; use it after the package containing this change is released, or build this checkout locally.
+
+```ts
+import { BlockRunAccountClient } from "@blockrun/nano-client";
+
+const api = new BlockRunAccountClient({ apiKey: process.env.BLOCKRUN_API_KEY! });
+const result = await api.chat({
+  model: "openai/gpt-4.1-nano",
+  messages: [{ role: "user", content: "Hello!" }],
+});
+console.log(result.data.choices[0]?.message.content);
+console.log(result.billing.mode); // "account"; see the portal for charges/credits
+
+for await (const chunk of api.chatStream({
+  model: "openai/gpt-4.1-nano",
+  messages: [{ role: "user", content: "Hello!" }],
+})) console.log(chunk);
+```
+
+Account requests use `https://api.blockrun.ai/v1` and bearer authentication. They require no wallet, chain selection or Gateway deposit. HTTP errors expose `BlockRunAccountError.status` and `retryAfter`. Calls are not automatically replayed on 402, 429 or server errors. The default request deadline is 120 seconds (`timeoutMs` is configurable).
+
+### Media and other services
+
+```ts
+const image = await api.images.generate({ model: "openai/gpt-image-1", prompt: "A blue square" });
+const speech = await api.audio.tts({ model: "elevenlabs/flash-v2.5", input: "Hello", response_format: "mp3" });
+const job = await api.videos.generate<{ poll_url: string }>({
+  model: "xai/grok-imagine-video", prompt: "A cloud drifting slowly", duration_seconds: 5,
+});
+const video = await api.poll(job.data.poll_url);
+```
+
+Generation helpers return the server response directly. If image/music/video generation returns a `poll_url`, pass that complete URL to `api.poll()`; it preserves the signed query and only reads the existing job. A timeout does not resubmit it. `videos.status(pollUrl)` performs one status read. Account API availability still depends on the selected upstream provider and gateway configuration.
+
+| API | Helper |
+| --- | --- |
+| Chat / model catalog | `chat`, `ask`, `chatStream`, `listModels` |
+| Images | `images.generate`, `images.edit` |
+| Video / music | `videos.generate`, `music.generate`, `poll` |
+| Speech / sound effects | `audio.tts`, `audio.soundEffects` |
+| Search / X | `search`, `x.call(path, params)` |
+| Crypto prices / history | `price.price(symbol)`, `price.history(symbol, { from, to, resolution })` |
+| Prediction markets | `price.pm("markets/search", { q: "bitcoin" })` |
+| Signal / Surf | `call("/v1/surf/market/ranking")` |
+| Other JSON services | `call("/v1/...", { method, body, headers })` |
+
+`call()` accepts JSON services on the configured account origin; it is not a binary-download or general streaming transport. Media responses contain output URLs. Account billing results have `{ data, billing }`; Circle Gateway results retain `{ data, payment }`.
+
+### Wallet access
+
+For native x402, prefer **Solana** at [sol.blockrun.ai](https://sol.blockrun.ai), followed by **Base** at [blockrun.ai](https://blockrun.ai), using the [main TypeScript SDK](https://github.com/BlockRunAI/blockrun-llm-ts). Nano's Circle Gateway mode covers the EVM chains below. Its deposit, withdrawal and transaction tracking methods apply only to `NanoClient`.
 
 ## Supported chains
 
@@ -48,7 +92,7 @@ npm install @blockrun/nano-client
 pnpm add @blockrun/nano-client
 ```
 
-## Quick start
+## Circle Gateway quick start
 
 ```ts
 import { NanoClient } from "@blockrun/nano-client";
