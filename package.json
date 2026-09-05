@@ -1,7 +1,7 @@
 {
   "name": "@blockrun/nano-client",
   "version": "0.7.1",
-  "description": "TypeScript client for blockrun-nano: Circle Gateway batched USDC payments → BlockRun's full AI model catalog across Polygon, Arbitrum, Optimism, Unichain.",
+  "description": "BlockRun account API client plus Circle Gateway batched USDC access across ten EVM chains.",
   "license": "Apache-2.0",
   "author": "BlockRun",
   "homepage": "https://nano.blockrun.ai",
@@ -40,6 +40,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
+    "test": "node --test test/*.test.mjs",
     "e2e": "tsx examples/e2e-test.ts",
     "address": "tsx examples/print-address.ts"
   },

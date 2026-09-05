@@ -1,7 +1,7 @@
 /**
  * @blockrun/nano-client — TypeScript SDK for blockrun-nano.
  *
- * Pay-per-request AI on Polygon / Arbitrum / Optimism / Unichain mainnet via
+ * Account API access, or pay-per-request AI on Polygon / Arbitrum / Optimism / Unichain mainnet via
  * Circle Gateway batched USDC. Same OpenAI-compatible model catalog and
  * routes as blockrun.ai (chat, images, music, video, search, X/Twitter,
  * Pyth-backed market data) — but with **gas-free off-chain signatures
@@ -25,6 +25,18 @@ import {
   type SupportedChainName,
 } from "@circle-fin/x402-batching/client";
 import type { Hex } from "viem";
+
+export {
+  BLOCKRUN_ACCOUNT_API_URL,
+  BLOCKRUN_ACCOUNT_PORTAL_URL,
+  BlockRunAccountClient,
+  BlockRunAccountError,
+  type AccountMediaJob,
+  type AccountRequestInit,
+  type BlockRunAccountClientConfig,
+  type AccountBillingReceipt,
+  type AccountCallResult,
+} from "./account.js";
 
 // =============================================================================
 // Endpoints
