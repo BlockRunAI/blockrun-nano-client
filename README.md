@@ -1,6 +1,8 @@
 # @blockrun/nano-client
 
-> TypeScript access to BlockRun with an account API key or Circle Gateway batched USDC. Chat, streaming, image, video, music, speech, search, X and market-data routes use the same account transport.
+> Pay-per-call AI API for agents, paid in USDC through **Circle Gateway** — deposit once on any of 11 EVM chains (Arc included, where USDC is the gas), then pay for every model call with an off-chain signature. No API key, no gas per call. Also works with a BlockRun account API key. Chat, streaming, image, video, music, speech, search, X and market-data routes on one OpenAI-compatible transport.
+>
+> **Start here:** [30-second quickstart](https://nano.blockrun.ai/get-started) · [How Circle Gateway pays for AI calls](https://nano.blockrun.ai/x402/circle-gateway) · [Paying from USDC on Arc](https://nano.blockrun.ai/x402/arc)
 
 [![npm](https://img.shields.io/npm/v/@blockrun/nano-client.svg)](https://www.npmjs.com/package/@blockrun/nano-client)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -67,7 +69,7 @@ For native x402, prefer **Solana** at [sol.blockrun.ai](https://sol.blockrun.ai)
 
 ## Supported chains
 
-All 10 mainnet chains Circle Gateway supports today (Base excluded by design):
+All 11 mainnet chains Circle Gateway supports today (Base excluded by design). The live list is the `networks` array in [`/.well-known/x402`](https://nano.blockrun.ai/.well-known/x402) — a chain appears there the moment Circle's facilitator lists it:
 
 | Chain | `SupportedChainName` | Chain ID | Native gas |
 |---|---|---|---|
@@ -81,6 +83,7 @@ All 10 mainnet chains Circle Gateway supports today (Base excluded by design):
 | WorldChain | `worldChain` | 480 | ETH |
 | HyperEVM | `hyperEvm` | 999 | HYPE |
 | Ethereum | `ethereum` | 1 | ETH |
+| Arc | `arc` | 5042 | **USDC** — no second token needed |
 
 > **Base** is intentionally not in nano — buyers on Base should use [`blockrun.ai`](https://blockrun.ai) (native x402, no Gateway deposit step required).
 
@@ -451,6 +454,10 @@ CLIENT_PRIVATE_KEY=0x... pnpm exec tsx examples/e2e-test.ts
 
 ## Documentation
 
+- **Quickstart (deposit once, then call)**: https://nano.blockrun.ai/get-started
+- **Circle Gateway for AI agents — how a call is paid**: https://nano.blockrun.ai/x402/circle-gateway
+- **Paying from USDC on Arc**: https://nano.blockrun.ai/x402/arc
+- **Agent-readable surface**: [`llms.txt`](https://nano.blockrun.ai/llms.txt) · [`openapi.json`](https://nano.blockrun.ai/openapi.json) · [`/.well-known/x402`](https://nano.blockrun.ai/.well-known/x402)
 - **Full docs**: https://blockrun.ai/docs
 - **Gateways & networks** (incl. the nano / Circle Gateway gateway): https://blockrun.ai/docs/x402/endpoints
 - **All BlockRun SDKs & APIs**: https://blockrun.ai/docs
