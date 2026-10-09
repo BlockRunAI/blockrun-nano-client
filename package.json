@@ -1,6 +1,6 @@
 {
   "name": "@blockrun/nano-client",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "BlockRun account API client plus Circle Gateway batched USDC access across ten EVM chains.",
   "license": "Apache-2.0",
   "author": "BlockRun",
@@ -45,7 +45,7 @@
     "address": "tsx examples/print-address.ts"
   },
   "dependencies": {
-    "@circle-fin/x402-batching": "^3.0.2",
+    "@circle-fin/x402-batching": "^3.5.0",
     "viem": "^2.47.6"
   },
   "optionalDependencies": {

@@ -13,9 +13,9 @@
  *
  * Env:
  *   CLIENT_PRIVATE_KEY  required
- *   NANO_BASE_URL       optional override (defaults to Cloud Run direct URL)
+ *   NANO_BASE_URL       optional override (defaults to https://nano.blockrun.ai)
  *   DEPOSIT_USDC        optional; default "0.10" (covers ~100 calls @ $0.001)
- *   TEST_MODEL          optional; default "openai/gpt-4o-mini"
+ *   TEST_MODEL          optional; default "openai/gpt-5.6-luna"
  */
 
 import "dotenv/config";
@@ -23,7 +23,7 @@ import {
   NanoClient,
   NANO_MAINNET_URL,
 } from "../src/index.js";
-import type { Hex } from "viem";
+import { parseUnits, type Hex } from "viem";
 
 const PRIVATE_KEY = process.env.CLIENT_PRIVATE_KEY as Hex | undefined;
 if (!PRIVATE_KEY) {
@@ -33,7 +33,7 @@ if (!PRIVATE_KEY) {
 
 const BASE_URL = process.env.NANO_BASE_URL ?? NANO_MAINNET_URL;
 const DEPOSIT_USDC = process.env.DEPOSIT_USDC ?? "0.10";
-const TEST_MODEL = process.env.TEST_MODEL ?? "openai/gpt-4o-mini";
+const TEST_MODEL = process.env.TEST_MODEL ?? "openai/gpt-5.6-luna";
 
 async function main() {
   console.log("=== blockrun-nano e2e test ===");
@@ -75,7 +75,7 @@ async function main() {
   }
 
   // ── Step 2: Deposit if Gateway balance is too low ─────────────────────
-  const depositAtomic = BigInt(Math.floor(parseFloat(DEPOSIT_USDC) * 1_000_000));
+  const depositAtomic = parseUnits(DEPOSIT_USDC, 6);
   if (before.gateway.available < depositAtomic) {
     console.log(`Step 2: Depositing ${DEPOSIT_USDC} USDC into Circle Gateway ...`);
     if (before.wallet.balance < depositAtomic) {
@@ -130,9 +130,9 @@ async function main() {
   const elapsed = ((Date.now() - start) / 1000).toFixed(2);
 
   console.log(`  HTTP latency  : ${elapsed}s`);
-  console.log(`  Paid          : ${result.payment.formattedAmount}`);
+  console.log(`  Paid          : ${result.payment.formattedAmount} USDC`);
   console.log(`  Network       : ${result.payment.network}`);
-  console.log(`  Batch ID      : ${result.payment.transaction}`);
+  console.log(`  Transfer ID   : ${result.payment.transaction || "<none — free call>"}`);
   console.log("");
   console.log("Model response:");
   console.log(`  ${result.data.choices[0]?.message.content?.trim() ?? "<empty>"}`);
@@ -144,6 +144,9 @@ async function main() {
   console.log("");
   console.log("✅ End-to-end test complete.");
   console.log("");
+  if (result.payment.transaction) {
+    console.log(`Track settlement: client.waitForSettlement("${result.payment.transaction}")`);
+  }
   console.log(
     `Note: actual onchain settlement (debit + credit on Polygon) happens at the next
 hourly batch boundary. Verify the seller treasury address gains USDC on
