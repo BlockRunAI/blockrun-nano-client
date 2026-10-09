@@ -103,59 +103,45 @@ import { NanoClient } from "@blockrun/nano-client";
 const client = new NanoClient({
   chain: "polygon",
   privateKey: process.env.PRIVATE_KEY as `0x${string}`,
+  maxPaymentPerCall: "0.50",                              // refuse to sign any single quote above $0.50
 });
 
 // One-time: move USDC from your wallet into Circle Gateway escrow
-await client.deposit("5");                                // $5 covers ~5,000 calls @ $0.001
+await client.deposit("5");
 
-// From here, every call is offchain EIP-712 signature → zero gas
+// From here, every call is an off-chain EIP-712 signature → zero gas
 const r = await client.chat({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5.6-luna",
   messages: [{ role: "user", content: "Hello!" }],
 });
 console.log(r.data.choices[0].message.content);
-console.log(r.payment.formattedAmount);                   // "$0.001000"
+console.log(r.payment.formattedAmount);                   // e.g. "0.000412" (USDC)
 ```
 
 For an even-shorter shape:
 
 ```ts
-const reply = await client.ask("openai/gpt-4o-mini", "What is 2+2?");
+const reply = await client.ask("openai/gpt-5.6-luna", "What is 2+2?");
 console.log(reply);                                       // "4"
 ```
 
-### Try It Free (No USDC Required)
+### Try it free (no USDC required)
 
-Skip the Gateway deposit entirely — call free NVIDIA models directly:
+Free models answer without a 402, so no deposit and no signature are needed:
 
 ```ts
-import { NanoClient } from "@blockrun/nano-client";
-
-const client = new NanoClient({
-  chain: "polygon",
-  privateKey: process.env.PRIVATE_KEY as `0x${string}`,
-});
-
-// No deposit() call required for free models
-const reply = await client.ask("nvidia/qwen3-next-80b-a3b-thinking", "Explain x402 in 1 sentence");
-console.log(reply);
+const client = new NanoClient({ chain: "polygon", privateKey: process.env.PRIVATE_KEY as `0x${string}` });
+const reply = await client.ask("nvidia/nemotron-3-super-120b", "Explain x402 in 1 sentence");
 ```
 
-**Available free models** (input + output both $0, all NVIDIA-hosted, last refreshed 2026-04-28):
+**Free models** (input + output both $0, NVIDIA-hosted; live list: `client.listModels()`, `billing_mode: "free"`; last checked 2026-10-09):
 
-| Model ID | Context | Best For |
+| Model ID | Context | Best for |
 |----------|---------|----------|
-| `nvidia/deepseek-v4-pro` | 1M | Flagship reasoning — MMLU-Pro 87.5, GPQA 90.1, SWE-bench 80.6, LiveCodeBench 93.5 |
-| `nvidia/deepseek-v4-flash` | 1M | ~5× faster than V4 Pro — chat, summarization, light reasoning (weaker factual recall) |
-| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | 256K | Only vision-capable free model — text + images + video (≤2 min) + audio (≤1 hr) |
-| `nvidia/qwen3-next-80b-a3b-thinking` | 131K | 116 tok/s reasoning with thinking mode |
-| `nvidia/mistral-small-4-119b` | 131K | 114 tok/s — fastest free chat |
-| `nvidia/glm-4.7` | 131K | 237 tok/s — GLM-4.7 with thinking mode |
-| `nvidia/llama-4-maverick` | 131K | Meta Llama 4 Maverick MoE |
-| `nvidia/qwen3-coder-480b` | 131K | Coding-optimised 480B MoE |
-| `nvidia/deepseek-v3.2` | 131K | Legacy V3.2 — auto-upgrades to V4 Pro via fallback |
-
-> Note: `nvidia/gpt-oss-120b` and `nvidia/gpt-oss-20b` were retired 2026-04-28 — NVIDIA's free build.nvidia.com tier reserves the right to use prompts/outputs for service improvement, which conflicts with our data-privacy policy.
+| `nvidia/nemotron-3-super-120b` | 131K | Reasoning + coding, the strongest free model |
+| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | 256K | Vision-capable reasoning (text + images) |
+| `nvidia/llama-3.2-11b-vision` | 128K | Lightweight vision chat |
+| `nvidia/gpt-oss-20b` | 128K | Fast general chat + coding |
 
 ---
 
@@ -167,16 +153,53 @@ const client = new NanoClient({
   chain: "polygon",                                       // required
   baseUrl: "https://nano.blockrun.ai",                    // default
   rpcUrl: "https://polygon-mainnet.g.alchemy.com/v2/KEY", // optional override
-  maxRetries: 2,                                          // default
+  maxPaymentPerCall: "0.50",                              // optional per-call signing cap (USDC); default: no cap
+  timeoutMs: 300_000,                                     // default; music calls take 30-120s
+  maxRetries: 2,                                          // default; unpaid quote request only
 });
 ```
 
 If `rpcUrl` is omitted, the SDK uses a vetted public RPC per chain from
-`RECOMMENDED_RPC_URLS` (Polygon → 1rpc.io, Arb/Op → llamarpc, Unichain →
-drpc). Override for production.
+`RECOMMENDED_RPC_URLS`. Override for production.
 
 The default `baseUrl` is `https://nano.blockrun.ai`. A `NANO_MAINNET_DIRECT_URL`
 constant is also exported for fallback during DNS / CDN incidents.
+
+### Payment safety
+
+Every paid call is two requests: an unpaid request that returns a `402` quote, then the same request with a signed authorization. The SDK checks the quote **before signing**:
+
+- the option is for your `chain` and names Circle's real `GatewayWallet` contract,
+- `payTo` is a valid non-zero address and `amount` is a non-negative integer,
+- `amount` is at or below `maxPaymentPerCall` (when set).
+
+A failed check throws `NanoPaymentRejectedError` and nothing is signed. Transient failures of the **unpaid** request are retried (`maxRetries`). The **signed** request is never retried, so a dropped connection cannot double-charge you.
+
+Custom spend policy: register Circle lifecycle hooks on `client.paymentScheme`; they run before every NanoClient signature.
+
+```ts
+client.paymentScheme.onBeforePaymentCreation(async ({ selectedRequirements }) =>
+  BigInt(selectedRequirements.amount) > dailyBudgetLeft ? { abort: true, reason: "daily budget" } : undefined);
+```
+
+`client.gateway` is Circle's `GatewayClient`, for balances, deposits and withdrawals. Don't call `client.gateway.pay()` for nano requests: it bypasses these checks.
+
+### Errors
+
+```ts
+import { NanoRequestError, NanoPaymentRejectedError } from "@blockrun/nano-client";
+
+try {
+  await client.chat({ model: "openai/gpt-5.6-luna", messages });
+} catch (err) {
+  if (err instanceof NanoPaymentRejectedError) { /* quote refused, nothing signed */ }
+  if (err instanceof NanoRequestError) {
+    err.status;          // HTTP status (0 = network failure)
+    err.body;            // server response body
+    err.paymentSigned;   // true → an authorization was sent; it may still settle. Check before retrying.
+  }
+}
+```
 
 ---
 
@@ -186,7 +209,7 @@ constant is also exported for fallback during DNS / CDN incidents.
 
 ```ts
 const r = await client.chat({
-  model: "anthropic/claude-haiku-4.5",
+  model: "anthropic/claude-sonnet-4.6",
   messages: [
     { role: "system", content: "You answer in one sentence." },
     { role: "user", content: "Explain MEV." },
@@ -195,33 +218,46 @@ const r = await client.chat({
 });
 ```
 
+### Vision
+
+```ts
+const r = await client.chat({
+  model: "google/gemini-3.8-flash",
+  messages: [{
+    role: "user",
+    content: [
+      { type: "text", text: "What is in this image?" },
+      { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+    ],
+  }],
+});
+```
+
 ### Simple `ask(model, prompt)`
 
 ```ts
-const reply = await client.ask("openai/gpt-4o-mini", "List 3 EVM rollups");
+const reply = await client.ask("qwen/qwen3.8-flash", "List 3 EVM rollups");
 ```
 
-### Smart routing (ClawRouter)
+### Featured models
 
-Let nano pick the cheapest capable model based on a 14-dimension classifier:
+89 models are live; `client.listModels()` returns the full catalog with pricing. Prices are USD per 1M tokens (input / output), last checked 2026-10-09.
 
-```ts
-const r = await client.smartChat({ prompt: "What is 2+2?" });
-console.log(r.data.model);                                // "moonshot/kimi-k2.5"
-
-const hard = await client.smartChat({
-  prompt: "Prove the Riemann hypothesis step by step",
-  routing_profile: "premium",
-});
-console.log(hard.data.model);                             // "openai/gpt-5.4"
-```
-
-| `routing_profile` | Behaviour |
-|---|---|
-| `"free"` | NVIDIA free-tier models only (zero cost) |
-| `"eco"` | Cheapest capable model per tier (DeepSeek, NVIDIA) |
-| `"auto"` *(default)* | Best balance of cost / quality |
-| `"premium"` | Top-tier (OpenAI, Anthropic) |
+| Model | Price | Notes |
+|---|---|---|
+| `openai/gpt-6-astra` | $10 / $50 | OpenAI flagship, 1M context |
+| `openai/gpt-5.6-sol` · `-terra` · `-luna` | $2 / $10 · $2 / $12 · $0.2 / $1.2 | GPT-5.6 family; `-pro` variants available |
+| `anthropic/claude-opus-4.8` | $5 / $25 | Anthropic flagship, 1M context |
+| `anthropic/claude-sonnet-4.6` | $3 / $15 | |
+| `google/gemini-3.8-flash` | $0.75 / $3.75 | Vision, 1M context |
+| `google/gemini-3.1-pro` | $2 / $12 | |
+| `xai/grok-4.6` | $2 / $6 | Built-in search |
+| `moonshot/kimi-k3` | $3 / $15 | |
+| `zai/glm-5.3` · `zai/glm-5.3-flash` | $1.4 / $4.4 · $0.15 / $0.5 | |
+| `deepseek/deepseek-v4-pro` | $0.957 / $1.914 | |
+| `minimax/minimax-m3` | $0.3 / $1.2 | 1M context |
+| `qwen/qwen3.8-flash` · `qwen/qwen3.7-max` | $0.15 / $0.47 · $1.475 / $4.425 | |
+| `xiaomi/mimo-v2.5-pro` · `tencent/hy3` | $0.435 / $0.87 · $0.132 / $0.528 | |
 
 ---
 
@@ -229,11 +265,20 @@ console.log(hard.data.model);                             // "openai/gpt-5.4"
 
 ```ts
 const r = await client.images.generate({
-  model: "openai/dall-e-3",
+  model: "openai/gpt-image-2",                            // also: google/nano-banana(-pro), xai/grok-imagine-image(-pro), zai/cogview-4
   prompt: "A cat coding TypeScript at sunset, isometric voxel art",
   size: "1024x1024",
 });
 console.log(r.data);                                      // OpenAI-compatible response
+```
+
+Fast models return the image directly. Slow models answer HTTP 202 with a job; poll it like a video (charged only on completion):
+
+```ts
+import { isNanoAsyncJob } from "@blockrun/nano-client";
+
+const r = await client.images.generate({ model: "google/nano-banana-pro", prompt: "…" });
+const result = isNanoAsyncJob(r.data) ? (await client.images.wait(r.data)).data : r.data;
 ```
 
 Image-to-image edit:
@@ -248,20 +293,44 @@ const r = await client.images.edit({
 
 ---
 
-## Video & music
+## Video
+
+Video is an async job. `generate()` signs the payment but nothing is charged yet; the charge settles on the first poll that finds the job `completed`. If upstream fails, you pay nothing.
 
 ```ts
-const job = await client.videos.generate({
-  model: "minimax/video-01",
+const { data: job } = await client.videos.generate({
+  model: "xai/grok-imagine-video",                        // also: bytedance/seedance-2.0(-fast), bytedance/seedance-1.5-pro, azure/sora-2
   prompt: "A red apple slowly rotating on a wooden table",
-  duration: 6,
+  duration_seconds: 6,                                    // billed per second; omit for the model default
 });
-const status = await client.videos.status(job.data.id);   // poll until ready
+const done = await client.videos.wait(job);               // polls every 5s, throws if upstream failed
+console.log(done.data.url, done.payment.formattedAmount);
+```
 
+Keep the `job` object until it completes. Polling replays the authorization signed at submit time (`job.paymentHeader`). If `wait()` times out, call it again with the same job; resubmitting would sign a second payment. `videos.status(job)` does a single poll. The submit receipt shows `amount: 0n`; the settling poll's receipt carries the charge, and later polls of the same finished job show `0n` again.
+
+## Music
+
+One synchronous call of 30-120s; the track is in the response.
+
+```ts
 const m = await client.music.generate({
+  model: "minimax/music-2.5+",
   prompt: "Lo-fi hip hop, soft piano, rainy night",
-  duration: 30,
+  instrumental: true,
 });
+```
+
+## Speech & sound effects
+
+```ts
+const tts = await client.audio.speech({                   // alias: audio.tts
+  model: "elevenlabs/flash-v2.5",                         // also: turbo-v2.5, multilingual-v2, v3
+  input: "Hello from nano",
+  voice: "sarah",
+  response_format: "mp3",
+});
+const sfx = await client.audio.soundEffects({ model: "elevenlabs/sound-effects", text: "Glass shattering", duration_seconds: 3 });
 ```
 
 ---
@@ -269,54 +338,19 @@ const m = await client.music.generate({
 ## Search
 
 ```ts
-const r = await client.search({ query: "latest Solana TVL changes this week" });
+const r = await client.search({ query: "latest Solana TVL changes this week", sources: ["web", "news"] });
 ```
 
 ---
 
-## X / Twitter intelligence
-
-Powered by AttentionVC. All methods return `{ data, payment }` — typed
-generic so you can pass your own response shape.
+## Prediction markets (Predexon)
 
 ```ts
-const profile = await client.x.userInfo("vitalikbuterin");
-const followers = await client.x.followers("vitalikbuterin", { cursor: "..." });
-const search = await client.x.search("blockrun OR x402", { query_type: "Latest" });
-const trending = await client.x.trending();
-const tweet = await client.x.tweetLookup("1234567890123456789");
-const thread = await client.x.tweetThread("1234567890123456789");
-const mentions = await client.x.userMentions("vitalikbuterin");
-const articles = await client.x.articlesRising();
+const markets = await client.pm("polymarket/markets", { limit: 5 });
+const found = await client.pm("markets/search", { q: "election" });  // Polymarket, Kalshi, Limitless, Opinion, Predict.Fun
 ```
 
-Full method list:
-
-| Method | Notes |
-|---|---|
-| `client.x.userLookup(usernames)` | Profile lookup, single or batch |
-| `client.x.userInfo(username)` | Single profile + intel layer |
-| `client.x.followers(username, {cursor?})` | $0.05/page (~200 accounts) |
-| `client.x.followings(username, {cursor?})` | |
-| `client.x.verifiedFollowers(username, {cursor?})` | |
-| `client.x.userTweets(username, {cursor?, limit?})` | |
-| `client.x.userMentions(username, {cursor?, limit?})` | |
-| `client.x.tweetLookup(tweetIds)` | Single or batch |
-| `client.x.tweetReplies(tweetId, {cursor?})` | |
-| `client.x.tweetThread(tweetId, {cursor?})` | |
-| `client.x.search(query, {query_type?, cursor?})` | $0.032/page |
-| `client.x.trending()` | |
-| `client.x.articlesRising()` | |
-
----
-
-## Pyth-backed price + Predexon markets
-
-```ts
-const px = await client.price.price("BTC/USD");
-const hist = await client.price.history("ETH/USD", { range: "7d", resolution: "1h" });
-const market = await client.price.pm("polymarket", { id: "..." });
-```
+X / Twitter and Pyth price routes are not served by nano; use `BlockRunAccountClient` (`x.call()`, `price.price()`) for those.
 
 ---
 
@@ -360,7 +394,7 @@ await seller.withdraw("5", { chain: "base" });             // → wallet on Base
 
 ## Payment intent tracking
 
-Every paid call returns `payment.transaction` — Circle's nanopayment intent UUID.
+Every paid call returns `payment.transaction`: Circle's transfer UUID (not an on-chain hash). It is empty for free calls.
 
 ```ts
 const r = await client.chat({ ... });
@@ -387,12 +421,12 @@ Status flow (per Circle's docs):
 
 ## Spending tracker
 
-Every paid call increments an in-process counter:
+Every settled paid call increments an in-process counter (video jobs count when they complete):
 
 ```ts
 const s = client.getSpending();
 console.log(`Spent $${s.total_usd.toFixed(4)} across ${s.calls} calls`);
-console.log(s.by_endpoint);                               // { "/v1/chat": {...}, "/v1/x/users": {...} }
+console.log(s.by_endpoint);                               // { "/chat/completions": {...}, "/videos/generations": {...} }
 
 client.resetSpending();                                   // reset for the next session
 ```
@@ -401,14 +435,16 @@ client.resetSpending();                                   // reset for the next 
 
 ## Generic raw call
 
-For endpoints not covered by typed helpers:
+For endpoints without a typed helper (Exa, DefiLlama, 0x, phone, Modal, RPC; full list in [`/api/openapi`](https://nano.blockrun.ai/api/openapi)):
 
 ```ts
-const r = await client.call("/api/v1/audio/generations", {
+const r = await client.call("/api/v1/exa/search", {
   method: "POST",
-  body: { model: "openai/tts-1", voice: "alloy", input: "Hello" },
+  body: { query: "x402 micropayments", numResults: 5 },
 });
 ```
+
+The same payment-safety checks apply.
 
 ---
 
@@ -437,7 +473,7 @@ CLIENT_PRIVATE_KEY=0x... pnpm exec tsx examples/e2e-test.ts
 2. Every API call returns `402 Payment Required` with a multi-chain `accepts` array
 3. SDK signs an EIP-712 `TransferWithAuthorization` against `GatewayWallet`
 4. Server forwards to Circle's facilitator → Circle queues for batch
-5. Circle batches every ~15 min on Polygon; pushes USDC into seller's Gateway balance
+5. Circle settles in periodic batches and credits the seller's Gateway balance
 6. Seller `withdraw()`s to wallet (instant, any Gateway-supported chain)
 
 **Your private key never leaves your machine.** The SDK signs locally, only the signature is sent.
@@ -449,7 +485,8 @@ CLIENT_PRIVATE_KEY=0x... pnpm exec tsx examples/e2e-test.ts
 - **Key management** — KMS / Vault, not raw `.env`
 - **RPC** — provide your own Alchemy / QuickNode key for production traffic
 - **Balance monitoring** — `await client.getBalances()` and alert when `gateway.available` drops below your threshold
-- **Retries** — built-in `maxRetries: 2` with exponential backoff handles transient 5xx; bump for high-volume agents
+- **Spending cap** — set `maxPaymentPerCall` so a bad quote or misconfigured `baseUrl` cannot drain your Gateway balance
+- **Retries** — `maxRetries: 2` retries the unpaid quote request only; on `NanoRequestError.paymentSigned === true`, check `getPaymentStatus()` before retrying by hand
 - **Reconciliation** — trust `client.getBalances()` per chain over reading the chain yourself
 
 ## Documentation
@@ -464,12 +501,21 @@ CLIENT_PRIVATE_KEY=0x... pnpm exec tsx examples/e2e-test.ts
 
 ## Links
 
-- **Buyer guide (CN + EN)**: [`BUYER-GUIDE.md`](./BUYER-GUIDE.md)
+- **Buyer guide**: [`BUYER-GUIDE.md`](./BUYER-GUIDE.md)
 - **Server source**: [`BlockRunAI/blockrun-nano`](https://github.com/BlockRunAI/blockrun-nano)
 - **Underlying SDK**: [`@circle-fin/x402-batching`](https://www.npmjs.com/package/@circle-fin/x402-batching) (Circle)
 - **Circle Gateway docs**: https://developers.circle.com/gateway
 - **Sister SDK (Python / Base / Solana)**: [`blockrun-llm`](https://pypi.org/project/blockrun-llm/)
 
+## Migrating from 0.7
+
+- `smartChat()` removed (nano has no smart routing; pick a model, see [Featured models](#featured-models)).
+- `client.x.*` and `client.price.price/history` removed (not served by nano). `client.price.pm(...)` → `client.pm(...)`.
+- `audio.tts()` now calls `/api/v1/audio/speech` (it previously hit the music endpoint); `audio.generate()` removed.
+- `videos.generate()` returns a job; poll it with `videos.wait(job)` / `videos.status(job)` (not an id string).
+- `duration` → `duration_seconds` for video and music (the old name is still mapped). Before 0.8 it was silently ignored and billed at the model default.
+- Errors are now `NanoRequestError` / `NanoPaymentRejectedError` with the server's message.
+
 ## License
 
-Apache-2.0
+Apache-2.0 — see [LICENSE](LICENSE).
