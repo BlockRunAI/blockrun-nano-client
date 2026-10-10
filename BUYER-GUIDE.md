@@ -51,16 +51,16 @@ console.log("address:", privateKeyToAccount(privateKey).address);
 //  ↑ Send $5 USDC + a small amount of native gas to this address on your chosen chain
 
 // 2. One-time deposit into Circle Gateway
-const gateway = new NanoClient({ chain: "polygon", privateKey });
+const gateway = new NanoClient({ chain: "polygon", privateKey, maxPaymentPerCall: "0.50" });
 await gateway.deposit("5");
 
 // 3. Call APIs (unlimited, gas-free)
 const r = await gateway.chat({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5.6-luna",
   messages: [{ role: "user", content: "Hello!" }],
 });
 console.log(r.data.choices[0].message.content);
-console.log(r.payment.formattedAmount);  // "$0.001000"
+console.log(r.payment.formattedAmount);  // e.g. "0.000412" (USDC)
 ```
 
 ## Prerequisites
@@ -120,24 +120,19 @@ Every paid call is signed off-chain. The SDK handles the 402 challenge → signa
 
 ```ts
 const r = await client.chat({
-  model: "anthropic/claude-haiku-4.5",
+  model: "anthropic/claude-sonnet-4.6",
   messages: [{ role: "user", content: "Explain MEV in one sentence." }],
 });
 
-const reply = await client.ask("openai/gpt-4o-mini", "Quick answer please");
+const reply = await client.ask("qwen/qwen3.8-flash", "Quick answer please");
+const free = await client.ask("nvidia/nemotron-3-super-120b", "Free model, no deposit needed");
 
-// Smart routing: let ClawRouter pick the cheapest capable model
-const smart = await client.smartChat({
-  prompt: "What is 2+2?",
-  routing_profile: "auto",  // or 'free' / 'eco' / 'premium'
-});
-
-// X / Twitter intel, image generation, video, music, search, prices...
-const trending = await client.x.trending();
-const img = await client.images.generate({
-  model: "openai/dall-e-3",
-  prompt: "voxel cat",
-});
+// Images, video, music, speech, search, prediction markets
+const img = await client.images.generate({ model: "openai/gpt-image-2", prompt: "voxel cat" });
+const { data: job } = await client.videos.generate({ model: "xai/grok-imagine-video", prompt: "a cat", duration_seconds: 6 });
+const video = await client.videos.wait(job);   // charged only when the job completes
+const speech = await client.audio.speech({ model: "elevenlabs/flash-v2.5", input: "Hello" });
+const markets = await client.pm("polymarket/markets", { limit: 5 });
 ```
 
 Every paid call returns `{ data, payment }`:
@@ -146,15 +141,16 @@ Every paid call returns `{ data, payment }`:
 {
   data: <typed response>,
   payment: {
-    transaction: "1b2192d3-aaed-4457-a740-a6abafcadb04",  // Circle nanopayment intent UUID
-    formattedAmount: "$0.001000",
+    transaction: "1b2192d3-aaed-4457-a740-a6abafcadb04",  // Circle transfer UUID (not an on-chain hash)
+    formattedAmount: "0.001",                               // USDC
     amount: 1000n,                                          // micro-USDC
     status: 200,
+    network: "polygon",
   }
 }
 ```
 
-Settlement is asynchronous: Circle batches ~every 15 min on Polygon (varies by chain). Track via `client.getPaymentStatus(intentId)` or `client.waitForSettlement(intentId)`.
+Settlement is asynchronous: Circle settles in periodic batches. Track via `client.getPaymentStatus(intentId)` or `client.waitForSettlement(intentId)`.
 
 ## Withdrawing
 
@@ -198,7 +194,7 @@ USDC-native, no slippage, ~13 minutes.
 
 1. **Key management** — KMS / Vault, not raw `.env`
 2. **Balance monitoring** — alert + auto-top-up when `client.getBalances()` drops below your threshold
-3. **Retries** — exponential backoff on 429 / 503 from `pay()` (built into the SDK with `maxRetries`)
+3. **Retries + caps** — the SDK retries only the unpaid quote request (`maxRetries`), never a signed one; set `maxPaymentPerCall` so no single quote can exceed your budget
 4. **High-frequency agents** — pace requests; one signature = one call
 5. **Reconciliation** — trust `client.getBalances()` per chain over reading the chain yourself
 6. **Settlement tracking** — `client.getPaymentStatus(intentId)` queries Circle's `/v1/x402/transfers/{id}` for the `Received → Batched → Confirmed → Completed` flow
@@ -216,10 +212,12 @@ USDC-native, no slippage, ~13 minutes.
 | `/api/v1/images/image2image` | POST | Circle Gateway | image edit |
 | `/api/v1/videos/generations` | POST | Circle Gateway | submit job |
 | `/api/v1/videos/generations/:id` | GET | Circle Gateway | poll job |
-| `/api/v1/audio/generations` | POST | Circle Gateway | TTS / music |
+| `/api/v1/audio/generations` | POST | Circle Gateway | music (synchronous, 30-120s) |
+| `/api/v1/audio/speech` | POST | Circle Gateway | text-to-speech (ElevenLabs) |
+| `/api/v1/audio/sound-effects` | POST | Circle Gateway | sound effects |
 | `/api/v1/search` | POST | Circle Gateway | Grok live search |
-| `/api/v1/x/users/*`, `/api/v1/x/tweets/*`, `/api/v1/x/search`, `/api/v1/x/trending`, `/api/v1/x/articles/rising` | GET/POST | Circle Gateway | AttentionVC |
-| `/api/v1/price`, `/api/v1/price/history`, `/api/v1/pm/*` | GET | Circle Gateway | Pyth / Predexon |
+| `/api/v1/pm/*` | GET | Circle Gateway | Predexon prediction markets |
+| `/api/v1/exa/*`, `/api/v1/defillama/*`, `/api/v1/zerox/*`, `/api/v1/phone/*`, `/api/v1/modal/*` | GET/POST | Circle Gateway | via `client.call()`; see [`/api/openapi`](https://nano.blockrun.ai/api/openapi) |
 | `/api/v1/models` | GET | free | model catalog |
 | `/api/health` | GET | free | health |
 

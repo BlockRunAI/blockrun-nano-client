@@ -11,8 +11,8 @@
  * Env (optional):
  *   PRIVATE_KEY      override the wallet private key
  *   AMOUNT_USDC      amount to bridge in USDC (default 0.10)
- *   NANO_BASE_URL    nano endpoint (default Cloud Run direct)
- *   TEST_MODEL       (default openai/gpt-4o-mini)
+ *   NANO_BASE_URL    nano endpoint (default https://nano.blockrun.ai)
+ *   TEST_MODEL       (default openai/gpt-5.6-luna)
  */
 
 import "dotenv/config";
@@ -39,7 +39,7 @@ const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
 const ECO_API = "https://deposit-addresses.eco.com/api/v1";
 const NANO_URL = process.env.NANO_BASE_URL ?? NANO_MAINNET_URL;
 const AMOUNT_USDC = process.env.AMOUNT_USDC ?? "0.10";
-const TEST_MODEL = process.env.TEST_MODEL ?? "openai/gpt-4o-mini";
+const TEST_MODEL = process.env.TEST_MODEL ?? "openai/gpt-5.6-luna";
 
 function loadKey(): Hex {
   if (process.env.PRIVATE_KEY) return process.env.PRIVATE_KEY as Hex;
@@ -135,7 +135,7 @@ async function signAndSubmitGasless(
   return id ?? text.slice(0, 80);
 }
 
-async function pollEcoJob(jobId: string, maxSec = 120): Promise<unknown> {
+async function pollEcoJob(jobId: string, maxSec = 360): Promise<unknown> {
   const start = Date.now();
   while ((Date.now() - start) / 1000 < maxSec) {
     const r = await fetch(`${ECO_API}/gasless/jobs/${encodeURIComponent(jobId)}`);
@@ -143,9 +143,13 @@ async function pollEcoJob(jobId: string, maxSec = 120): Promise<unknown> {
       const j = (await r.json()) as { data?: { status?: string; transferTxHash?: string; intentHash?: string } };
       const s = j.data?.status ?? "(unknown)";
       process.stdout.write(`\r  job ${jobId}: ${s}             `);
-      if (s === "COMPLETED" || s === "FAILED") {
+      if (s === "COMPLETED") {
         process.stdout.write("\n");
         return j;
+      }
+      if (s === "FAILED") {
+        process.stdout.write("\n");
+        throw new Error(`Eco job ${jobId} FAILED: ${JSON.stringify(j).slice(0, 400)}`);
       }
     }
     await new Promise((res) => setTimeout(res, 3000));
@@ -177,8 +181,9 @@ async function main() {
   console.log(`  Eco job id : ${jobId}`);
   console.log("");
 
-  // Step 3: Poll Eco job until COMPLETED
-  console.log("Step 3: Waiting for Eco bridge to complete (~20-40s) ...");
+  // Step 3: Poll Eco job until COMPLETED. Mainnet bridge can take 2–5 min
+  // depending on Base block-finality + Polygon Gateway indexer lag.
+  console.log("Step 3: Waiting for Eco bridge to complete (up to 6 min) ...");
   const job = await pollEcoJob(jobId);
   console.log(`  Eco bridge job result: ${JSON.stringify(job).slice(0, 400)}`);
   console.log("");
@@ -213,8 +218,8 @@ async function main() {
   });
   const elapsed = ((Date.now() - start) / 1000).toFixed(2);
   console.log(`  HTTP latency   : ${elapsed}s`);
-  console.log(`  Paid           : ${r.payment.formattedAmount}`);
-  console.log(`  Batch ID       : ${r.payment.transaction}`);
+  console.log(`  Paid           : ${r.payment.formattedAmount} USDC`);
+  console.log(`  Transfer ID    : ${r.payment.transaction}`);
   console.log("");
   console.log("Model response :");
   console.log("  " + (r.data.choices[0]?.message.content?.trim() ?? "<empty>"));

@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@circle-fin/x402-batching':
-        specifier: ^3.0.2
-        version: 3.0.2(@x402/core@2.11.0)(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+        specifier: ^3.5.0
+        version: 3.5.0(@x402/core@2.11.0)(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       viem:
         specifier: ^2.47.6
         version: 2.48.4(typescript@5.9.3)(zod@3.25.76)
@@ -34,8 +34,8 @@ packages:
   '@adraffy/ens-normalize@1.11.1':
     resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
 
-  '@circle-fin/x402-batching@3.0.2':
-    resolution: {integrity: sha512-e8ysgHxgNjgck0M5Ajhx84GRb75vGJHSfat4JDtSLWQLJR+j+UEzYcw/WfKzAU69AXQGujv9EeI6gyR3yU1tuA==}
+  '@circle-fin/x402-batching@3.5.0':
+    resolution: {integrity: sha512-BG4weseV3Q9Qpoo1MmFz588t5PQ210s6KxS1qVs9xEj6V4f771/JMrc7C4q/9pqnokl5wXxSxq6SGcsB5mL9SQ==}
     engines: {node: '>=18'}
     peerDependencies:
       '@x402/core': ^2.3.0
@@ -315,7 +315,7 @@ snapshots:
 
   '@adraffy/ens-normalize@1.11.1': {}
 
-  '@circle-fin/x402-batching@3.0.2(@x402/core@2.11.0)(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
+  '@circle-fin/x402-batching@3.5.0(@x402/core@2.11.0)(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
     dependencies:
       '@x402/core': 2.11.0
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
