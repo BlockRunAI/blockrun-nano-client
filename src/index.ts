@@ -1,17 +1,16 @@
 /**
  * @blockrun/nano-client — TypeScript SDK for blockrun-nano.
  *
- * Account API access, or pay-per-request AI on Polygon / Arbitrum / Optimism / Unichain mainnet via
- * Circle Gateway batched USDC. Same OpenAI-compatible model catalog and
- * routes as blockrun.ai (chat, images, music, video, search, X/Twitter,
- * Pyth-backed market data) — but with **gas-free off-chain signatures
- * after a one-time deposit**.
+ * Account API access, or pay-per-request AI on 11 EVM mainnets via Circle
+ * Gateway batched USDC. OpenAI-compatible chat plus images, video, music,
+ * speech, search and prediction-market routes — with **gas-free off-chain
+ * signatures after a one-time deposit**.
  *
  * Quick start:
- *   const client = new NanoClient({ chain: "polygon", privateKey: "0x..." });
+ *   const client = new NanoClient({ chain: "polygon", privateKey: "0x...", maxPaymentPerCall: "0.50" });
  *   await client.deposit("5");                              // wallet → Circle Gateway
  *   const r = await client.chat({                           // pay-per-call (zero gas)
- *     model: "openai/gpt-4o-mini",
+ *     model: "openai/gpt-5.6-luna",
  *     messages: [{ role: "user", content: "Hello!" }],
  *   });
  *
@@ -20,11 +19,14 @@
  */
 
 import {
+  BatchEvmScheme,
+  CHAIN_CONFIGS,
   GatewayClient,
   GATEWAY_DOMAINS,
   type SupportedChainName,
 } from "@circle-fin/x402-batching/client";
-import type { Hex } from "viem";
+import { formatUnits, isAddress, parseUnits, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 export {
   BLOCKRUN_ACCOUNT_API_URL,
@@ -82,7 +84,7 @@ export const RECOMMENDED_RPC_URLS: Partial<Record<SupportedChainName, string>> =
 // =============================================================================
 
 export interface NanoClientConfig {
-  /** EVM private key (0x-prefixed). The same address controls all 4 EVM chains. */
+  /** EVM private key (0x-prefixed). The same address controls every EVM chain. */
   privateKey: Hex;
   /** Which chain holds your Circle Gateway balance. */
   chain: SupportedChainName;
@@ -90,14 +92,34 @@ export interface NanoClientConfig {
   baseUrl?: string;
   /** Optional custom RPC URL (defaults from RECOMMENDED_RPC_URLS). */
   rpcUrl?: string;
-  /** Number of retries on transient pay() failures. Default 2. */
+  /**
+   * Retries for transient failures of the UNPAID quote request. A request is
+   * never retried once a payment authorization has been signed, so a flaky
+   * network cannot double-charge you. Default 2.
+   */
   maxRetries?: number;
+  /**
+   * Refuse to sign any single payment above this many USDC (decimal string,
+   * e.g. "0.50"). The server quotes the price; without a cap the SDK signs
+   * whatever it quotes. Strongly recommended in production. Default: no cap.
+   */
+  maxPaymentPerCall?: string;
+  /**
+   * Deadline per HTTP request in ms. Music generation is a single 30-120s
+   * call, so keep this above 150s. Default 300_000.
+   */
+  timeoutMs?: number;
 }
+
+/** OpenAI-compatible multimodal content part (vision models). */
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
 
 /** OpenAI-compatible message. */
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | ChatContentPart[];
   name?: string;
   tool_call_id?: string;
 }
@@ -129,32 +151,6 @@ export interface ChatCompletion {
   };
 }
 
-/** ClawRouter routing profiles — passed via `routing_profile` to /v1/chat/completions. */
-export type RoutingProfile = "free" | "eco" | "auto" | "premium";
-
-export interface SmartChatRequest {
-  prompt: string;
-  system?: string;
-  max_tokens?: number;
-  temperature?: number;
-  routing_profile?: RoutingProfile;
-}
-
-export interface SmartChatResponse {
-  /** Final text response. */
-  response: string;
-  /** Model that ClawRouter actually picked. */
-  model: string;
-  /** Routing decision metadata (if exposed by upstream). */
-  routing?: {
-    profile: RoutingProfile;
-    tier?: "SIMPLE" | "MEDIUM" | "COMPLEX" | "REASONING";
-    savings?: number;
-  };
-  /** Full upstream chat completion. */
-  raw: ChatCompletion;
-}
-
 export interface ImagesRequest {
   model: string;
   prompt: string;
@@ -173,22 +169,64 @@ export interface ImageEditRequest {
 }
 
 export interface VideosRequest {
+  /** e.g. `xai/grok-imagine-video`, `bytedance/seedance-2.0`, `azure/sora-2`. */
   model: string;
   prompt: string;
+  /** Billed length in seconds (defaults to the model's default length). */
+  duration_seconds?: number;
+  /** Optional seed image URL for image-to-video. */
+  image_url?: string;
+  /** @deprecated Use `duration_seconds`. Mapped automatically; the server ignores `duration`. */
   duration?: number;
   [extra: string]: unknown;
 }
 
 export interface MusicRequest {
-  model?: string;
+  /** e.g. `minimax/music-2.5+`. */
+  model: string;
   prompt: string;
+  /** Optional lyrics; omit for instrumental. */
+  lyrics?: string;
+  instrumental?: boolean;
+  duration_seconds?: number;
+  /** @deprecated Use `duration_seconds`. Mapped automatically. */
   duration?: number;
   [extra: string]: unknown;
 }
 
+/** Text-to-speech request (`POST /api/v1/audio/speech`). */
+export interface SpeechRequest {
+  /** e.g. `elevenlabs/flash-v2.5`, `elevenlabs/multilingual-v2`, `elevenlabs/v3`. */
+  model?: string;
+  /** Text to synthesize. Billed per character. */
+  input: string;
+  /** Voice alias (e.g. `sarah`, `george`) or raw ElevenLabs voice_id. */
+  voice?: string;
+  response_format?: "mp3" | "opus" | "pcm" | "wav";
+  speed?: number;
+  /** @deprecated Use `response_format`. Mapped automatically. */
+  format?: "mp3" | "opus" | "pcm" | "wav";
+  [extra: string]: unknown;
+}
+
+/** Sound-effect request (`POST /api/v1/audio/sound-effects`). */
+export interface SoundEffectsRequest {
+  model?: string;
+  /** Description of the sound effect. */
+  text: string;
+  /** Up to 22 seconds. */
+  duration_seconds?: number;
+  prompt_influence?: number;
+  response_format?: "mp3" | "opus" | "pcm" | "wav";
+  [extra: string]: unknown;
+}
+
+/**
+ * Loose audio request kept for `BlockRunAccountClient`. NanoClient uses
+ * {@link SpeechRequest} and {@link MusicRequest} instead.
+ */
 export interface AudioRequest {
   model: string;
-  /** Either a text-to-speech `input` or a base64 `audio` for transcription. */
   input?: string;
   audio?: string;
   voice?: string;
@@ -198,21 +236,68 @@ export interface AudioRequest {
 
 export interface SearchRequest {
   query: string;
+  /** Data sources to search, e.g. `["web", "news", "x"]`. */
+  sources?: string[];
+  max_results?: number;
   [extra: string]: unknown;
 }
 
 /** Receipt-style metadata returned alongside every paid call. */
 export interface PaymentReceipt {
-  /** Circle Gateway nanopayment intent UUID. */
+  /**
+   * Circle Gateway transfer UUID (NOT an on-chain tx hash — funds move in
+   * Circle's periodic batch). Pass it to `getPaymentStatus()` /
+   * `waitForSettlement()` to track settlement. Empty string for free calls
+   * and for authorizations that have not settled yet (video jobs).
+   */
   transaction: string;
   formattedAmount: string;
+  /** Amount in USDC atomic units (6 decimals). */
   amount: bigint;
   status: number;
+  /** Chain the buyer signed against (mirrors `NanoClient.chain`). */
+  network: SupportedChainName;
 }
 
 export interface NanoCallResult<T> {
   data: T;
   payment: PaymentReceipt;
+}
+
+/**
+ * An async job (video, or a slow image model) whose payment is authorized but
+ * not yet settled. Keep it until `wait()` / `status()` returns `completed`:
+ * polling replays `paymentHeader`, so resubmitting would sign a second payment.
+ */
+export interface NanoAsyncJob {
+  id: string;
+  /** Signed poll path returned by the server. Use verbatim. */
+  poll_url: string;
+  status: string;
+  model?: string;
+  /** Signed x402 authorization from the submit; replayed on every poll. */
+  paymentHeader: string;
+  /** Authorized amount in USDC atomic units — charged on the first completed poll. */
+  amount: bigint;
+  [field: string]: unknown;
+}
+/** A submitted video job. */
+export type NanoVideoJob = NanoAsyncJob;
+
+export interface NanoJobStatus {
+  id: string;
+  status: "queued" | "in_progress" | "completed" | "failed" | string;
+  /** `settled` on the poll that charged you; `already_settled` on later polls. */
+  payment?: { status?: string; [field: string]: unknown };
+  payment_status?: string;
+  [field: string]: unknown;
+}
+export type NanoVideoStatus = NanoJobStatus;
+
+/** True when a call returned an async job (HTTP 202 + `poll_url`) instead of a result. */
+export function isNanoAsyncJob(data: unknown): data is NanoAsyncJob {
+  const d = data as Partial<NanoAsyncJob> | null;
+  return !!d && typeof d === "object" && typeof d.poll_url === "string" && typeof d.paymentHeader === "string";
 }
 
 export type PaymentStatus =
@@ -234,44 +319,99 @@ type GatewayPayInit = {
   headers?: Record<string, string>;
 };
 
-const RETRYABLE_PAY_ERRORS = [
-  "etimedout", "econnreset", "econnrefused", "fetch failed", "network error",
-  "socket hang up", "service unavailable", "gateway timeout", "bad gateway",
-  "status 502", "status 503", "status 504", "facilitator_timeout",
-];
+/**
+ * Non-2xx response or transport failure from nano.
+ *
+ * `paymentSigned` tells you whether a payment authorization left this
+ * process. When it is `true` the server may still settle it, so check
+ * `getPaymentStatus()` / your Gateway balance before retrying by hand.
+ */
+export class NanoRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: string,
+    readonly paymentSigned: boolean,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "NanoRequestError";
+  }
+}
 
-function isRetryable(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return RETRYABLE_PAY_ERRORS.some((e) => lower.includes(e));
+/** The server's quote failed a pre-sign safety check; nothing was signed. */
+export class NanoPaymentRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NanoPaymentRejectedError";
+  }
+}
+
+interface PaymentRequirement {
+  scheme: string;
+  network: string;
+  amount: string;
+  /** USDC contract on `network`. */
+  asset: string;
+  payTo: string;
+  maxTimeoutSeconds: number;
+  extra?: { name?: string; version?: string; verifyingContract?: string; [k: string]: unknown };
+  [k: string]: unknown;
+}
+
+type CreatePaymentPayload = (x402Version: number, requirements: PaymentRequirement) => Promise<object>;
+
+const RETRYABLE_ERRORS = [
+  "etimedout", "econnreset", "econnrefused", "fetch failed", "network error",
+  "socket hang up", "eai_again",
+];
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+
+function isRetryableError(err: unknown): boolean {
+  const msg = (err instanceof Error ? `${err.message} ${String((err as { cause?: unknown }).cause ?? "")}` : String(err)).toLowerCase();
+  return RETRYABLE_ERRORS.some((e) => msg.includes(e));
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 // =============================================================================
 // NanoClient
 // =============================================================================
 
 export class NanoClient {
+  /**
+   * Circle's wallet client — use it for balances, deposits and withdrawals.
+   * Do not use `gateway.pay()` for nano calls: it bypasses NanoClient's
+   * pre-sign checks, spend cap and no-re-sign retry policy.
+   */
   readonly gateway: GatewayClient;
+  /**
+   * Circle signing scheme used for every NanoClient payment. Register Circle
+   * lifecycle hooks here (e.g. `paymentScheme.onBeforePaymentCreation(...)`);
+   * hooks registered on `gateway` only apply to `gateway.pay()`.
+   */
+  readonly paymentScheme: BatchEvmScheme;
   readonly baseUrl: string;
   readonly chain: SupportedChainName;
   readonly maxRetries: number;
+  readonly timeoutMs: number;
+  /** Per-call signing cap in USDC atomic units, or `undefined` for no cap. */
+  readonly maxPaymentPerCall: bigint | undefined;
 
-  /** X / Twitter helpers (`/api/v1/x/*`). */
-  readonly x: XHelpers;
   /** Image generation + editing (`/api/v1/images/*`). */
   readonly images: ImagesHelpers;
-  /** Video generation (`/api/v1/videos/*`). */
+  /** Async video generation (`/api/v1/videos/*`). */
   readonly videos: VideosHelpers;
-  /** Music / audio generation (`/api/v1/audio/*`, `/api/v1/music`). */
+  /** Music generation (`/api/v1/audio/generations`). */
   readonly music: MusicHelpers;
-  /** Text-to-speech / speech-to-text (`/api/v1/audio/*`). */
+  /** Text-to-speech and sound effects (`/api/v1/audio/speech`, `/api/v1/audio/sound-effects`). */
   readonly audio: AudioHelpers;
-  /** Pyth-backed price + market data (`/api/v1/price`, `/api/v1/pm/*`). */
-  readonly price: PriceHelpers;
 
+  private readonly createPaymentPayload: CreatePaymentPayload;
   private _spending: SpendingSummary = {
     total_usd: 0,
     total_micro_usdc: 0,
@@ -289,13 +429,25 @@ export class NanoClient {
     this.baseUrl = (config.baseUrl ?? NANO_MAINNET_URL).replace(/\/+$/, "");
     this.chain = config.chain;
     this.maxRetries = config.maxRetries ?? 2;
+    if (!Number.isInteger(this.maxRetries) || this.maxRetries < 0) throw new Error("maxRetries must be a non-negative integer.");
+    this.timeoutMs = config.timeoutMs ?? 300_000;
+    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) throw new Error("timeoutMs must be positive and finite.");
+    if (config.maxPaymentPerCall !== undefined && !/^\d+(\.\d{1,6})?$/.test(config.maxPaymentPerCall)) {
+      throw new Error(`maxPaymentPerCall must be a non-negative USDC amount with at most 6 decimals (e.g. "0.50"); got "${config.maxPaymentPerCall}".`);
+    }
+    this.maxPaymentPerCall =
+      config.maxPaymentPerCall !== undefined ? parseUnits(config.maxPaymentPerCall, 6) : undefined;
 
-    this.x = new XHelpers(this);
+    // The x402 flow runs here (not GatewayClient.pay) so the SDK can refuse a
+    // quote before signing, never re-sign on retry, and keep the signed header
+    // for job polling. Signing itself is Circle's public BatchEvmScheme.
+    this.paymentScheme = new BatchEvmScheme(privateKeyToAccount(config.privateKey));
+    this.createPaymentPayload = (version, requirements) => this.paymentScheme.createPaymentPayload(version, requirements);
+
     this.images = new ImagesHelpers(this);
     this.videos = new VideosHelpers(this);
     this.music = new MusicHelpers(this);
     this.audio = new AudioHelpers(this);
-    this.price = new PriceHelpers(this);
   }
 
   // ── Wallet / Gateway ────────────────────────────────────────────────────
@@ -323,7 +475,7 @@ export class NanoClient {
   /** POST /api/v1/chat/completions — OpenAI-compatible. */
   async chat(body: ChatCompletionsRequest): Promise<NanoCallResult<ChatCompletion>> {
     if ((body as { stream?: boolean }).stream) {
-      throw new Error("Streaming chat is not yet supported in v0.x; use non-streaming.");
+      throw new Error("Streaming chat is not supported by NanoClient; use non-streaming or BlockRunAccountClient.chatStream().");
     }
     return this.payJson<ChatCompletion>("/api/v1/chat/completions", body);
   }
@@ -332,7 +484,7 @@ export class NanoClient {
    * Convenience: simple prompt → string response, no message-array boilerplate.
    *
    * @example
-   *   const reply = await client.ask("openai/gpt-4o-mini", "What is 2+2?");
+   *   const reply = await client.ask("openai/gpt-5.4-mini", "What is 2+2?");
    */
   async ask(model: string, prompt: string, opts: { system?: string; max_tokens?: number; temperature?: number } = {}): Promise<string> {
     const messages: ChatMessage[] = [];
@@ -347,86 +499,73 @@ export class NanoClient {
     return r.data.choices[0]?.message.content ?? "";
   }
 
-  /**
-   * Smart chat — let ClawRouter pick the cheapest capable model for each
-   * request based on a 14-dimension classifier. Add `routing_profile` to
-   * bias toward `free` / `eco` / `auto` (default) / `premium`.
-   *
-   * @example
-   *   const r = await client.smartChat({ prompt: "What is 2+2?" });
-   *   console.log(r.model); // 'moonshot/kimi-k2.5'
-   *
-   *   const hard = await client.smartChat({
-   *     prompt: "Prove the Riemann hypothesis",
-   *     routing_profile: "premium",
-   *   });
-   */
-  async smartChat(req: SmartChatRequest): Promise<NanoCallResult<SmartChatResponse>> {
-    const messages: ChatMessage[] = [];
-    if (req.system) messages.push({ role: "system", content: req.system });
-    messages.push({ role: "user", content: req.prompt });
-    const body: ChatCompletionsRequest & { routing: "smart"; routing_profile?: RoutingProfile } = {
-      // dummy model — server replaces via ClawRouter
-      model: "auto",
-      messages,
-      routing: "smart",
-      routing_profile: req.routing_profile ?? "auto",
-      ...(req.max_tokens !== undefined ? { max_tokens: req.max_tokens } : {}),
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-    };
-    const result = await this.payJson<ChatCompletion>("/api/v1/chat/completions", body);
-    const text = result.data.choices[0]?.message.content ?? "";
-    return {
-      data: {
-        response: text,
-        model: result.data.model,
-        routing: { profile: req.routing_profile ?? "auto" },
-        raw: result.data,
-      },
-      payment: result.payment,
-    };
-  }
-
   // ── Search ──────────────────────────────────────────────────────────────
 
+  /** POST /api/v1/search — Grok live web / news / X search. */
   async search<T = unknown>(body: SearchRequest): Promise<NanoCallResult<T>> {
     return this.payJson<T>("/api/v1/search", body);
+  }
+
+  // ── Prediction markets ──────────────────────────────────────────────────
+
+  /**
+   * Predexon prediction-market data — `path` is appended to `/api/v1/pm/`.
+   *
+   * @example
+   *   await client.pm("polymarket/markets", { limit: 5 });
+   *   await client.pm("markets/search", { q: "election" });
+   */
+  pm<T = unknown>(path: string, params: Record<string, unknown> = {}): Promise<NanoCallResult<T>> {
+    return this._payGet<T>(`/api/v1/pm/${path.replace(/^\/+/, "")}`, params);
   }
 
   // ── Models catalog (free) ───────────────────────────────────────────────
 
   /** GET /api/v1/models — free; lists all available models with pricing. */
   async listModels<T = unknown>(): Promise<T> {
-    const r = await fetch(`${this.baseUrl}/api/v1/models`);
+    const r = await fetch(`${this.baseUrl}/api/v1/models`, {
+      redirect: "error",
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
     if (!r.ok) throw new Error(`listModels failed: HTTP ${r.status}`);
     return (await r.json()) as T;
   }
 
   // ── Generic raw call ────────────────────────────────────────────────────
 
-  /** Generic paid call — for endpoints not covered by typed helpers. */
+  /**
+   * Generic paid call — for endpoints not covered by typed helpers
+   * (Exa, DefiLlama, 0x, phone, Modal, RPC...). See https://nano.blockrun.ai/api/openapi.
+   */
   async call<T = unknown>(
     path: string,
     init: GatewayPayInit = {},
   ): Promise<NanoCallResult<T>> {
+    if ((init.body as { stream?: unknown } | undefined)?.stream === true) {
+      throw new Error("Streaming responses are not supported by NanoClient.call(); omit stream:true.");
+    }
     return this.payRequest<T>(path, init);
   }
 
   // ── Payment intent tracking ─────────────────────────────────────────────
 
   /**
-   * Look up a Circle Gateway nanopayment intent's status via
-   * `GET https://gateway-api.circle.com/v1/x402/transfers/{id}`.
+   * Look up a Circle Gateway transfer's status via
+   * `GET https://gateway-api.circle.com/v1/x402/transfers/{id}` (testnet
+   * chains use Circle's testnet host).
    *
    * Status flow: `Received` → `Batched` → `Confirmed` → `Completed`
    * `Completed` = seller's Circle Gateway available balance has increased.
-   * To get on-chain wallet USDC, the seller calls `withdraw()` on their key.
    */
   async getPaymentStatus(intentId: string): Promise<PaymentStatus> {
     const facilitatorUrl = this.facilitatorUrlForChain();
+    if (!intentId.trim()) {
+      // An empty id would hit the list endpoint and read as a bogus "pending".
+      return { status: "unknown", intentId, facilitatorUrl, note: "No transfer id — free calls and unsettled video jobs have none." };
+    }
     const url = `${facilitatorUrl}/v1/x402/transfers/${encodeURIComponent(intentId)}`;
     try {
-      const r = await fetch(url, { method: "GET" });
+      const r = await fetch(url, { method: "GET", signal: AbortSignal.timeout(this.timeoutMs) });
       if (r.status === 404) {
         return { status: "unknown", intentId, facilitatorUrl, note: `Circle returned 404 — intent not found.` };
       }
@@ -435,7 +574,7 @@ export class NanoClient {
         return { status: "unknown", intentId, facilitatorUrl, note: `Circle returned HTTP ${r.status}: ${text.slice(0, 200)}` };
       }
       const body = (await r.json()) as Record<string, unknown>;
-      return interpretCircleStatus(intentId, body);
+      return interpretCircleStatus(intentId, body, facilitatorUrl);
     } catch (err) {
       return { status: "unknown", intentId, facilitatorUrl, note: `Network error: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -452,7 +591,7 @@ export class NanoClient {
     let last: PaymentStatus = { status: "unknown", intentId, facilitatorUrl: this.facilitatorUrlForChain(), note: "polling not yet started" };
     while (Date.now() - start < timeoutMs) {
       last = await this.getPaymentStatus(intentId);
-      if (last.status === "settled" || last.status === "failed") return last;
+      if (last.status === "settled" || last.status === "failed" || !intentId.trim()) return last;
       await sleep(pollIntervalMs);
     }
     return last;
@@ -477,7 +616,7 @@ export class NanoClient {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
-  /** @internal Used by namespaced helpers (this.x, this.images, ...). */
+  /** @internal Used by namespaced helpers (this.images, ...). */
   async _payJson<T>(path: string, body: unknown): Promise<NanoCallResult<T>> {
     return this.payJson<T>(path, body);
   }
@@ -494,6 +633,90 @@ export class NanoClient {
     return this.payRequest<T>(fullPath, { method: "GET" });
   }
 
+  /** @internal Submit a video job, keeping the signed header for polling. */
+  async _submitVideo(body: Record<string, unknown>): Promise<NanoCallResult<NanoAsyncJob>> {
+    const path = "/api/v1/videos/generations";
+    const r = await this.x402Fetch<Record<string, unknown>>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (r.status !== 202 || !r.paymentHeader || typeof r.data?.poll_url !== "string") {
+      throw new NanoRequestError("Video submit did not return a payable job (expected HTTP 202 with poll_url).", r.status, JSON.stringify(r.data).slice(0, 2000), r.paymentHeader !== undefined);
+    }
+    // Authorized, not settled: amount is charged on the first completed poll.
+    return {
+      data: { ...r.data, paymentHeader: r.paymentHeader, amount: r.amount } as NanoAsyncJob,
+      payment: { transaction: "", formattedAmount: "0", amount: 0n, status: r.status, network: this.chain },
+    };
+  }
+
+  /** @internal Poll an async job once with its original authorization. */
+  async _pollJob<T extends NanoJobStatus>(job: NanoAsyncJob, kindPath: string): Promise<NanoCallResult<T>> {
+    const base = new URL(`${this.baseUrl}/`);
+    const url = job.poll_url.startsWith("/") ? new URL(`${this.baseUrl}${job.poll_url}`) : new URL(job.poll_url);
+    const prefix = `${base.pathname.replace(/\/$/, "")}${kindPath}/`;
+    if (url.origin !== base.origin || !url.pathname.startsWith(prefix)) {
+      throw new Error(`poll_url must be the nano ${kindPath} poll path returned by the submit call.`);
+    }
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "GET",
+        headers: { "x-payment": job.paymentHeader },
+        redirect: "error",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      throw new NanoRequestError(`Job poll failed: ${errMessage(err)}. Poll the same job again; do not resubmit.`, 0, "", true, { cause: err });
+    }
+    if (!res.ok) throw await this.httpError(res, true, "Job poll failed");
+    const text = await res.text();
+    const data = parseJson(text) as T | undefined;
+    if (data === undefined) throw new NanoRequestError("Job poll returned a non-JSON body.", res.status, text.slice(0, 2000), true);
+    const settlement = readPaymentResponse(res.headers);
+    const payStatus = data.payment?.status;
+    // Later polls of a finished job answer `already_settled`; only the
+    // settling poll is a charge.
+    const settledNow =
+      res.status === 200 && data.status === "completed" &&
+      (payStatus === "settled" || (payStatus === undefined && settlement !== undefined));
+    if (settledNow) this.recordSpend(kindPath, job.amount);
+    const amount = settledNow ? job.amount : 0n;
+    return {
+      data,
+      payment: {
+        transaction: settledNow ? settlement?.transaction ?? "" : "",
+        formattedAmount: formatUnits(amount, 6),
+        amount,
+        status: res.status,
+        network: this.chain,
+      },
+    };
+  }
+
+  /** @internal Poll until completed (returned) or failed (thrown). */
+  async _waitJob<T extends NanoJobStatus>(
+    job: NanoAsyncJob,
+    kindPath: string,
+    opts: { intervalMs?: number; maxAttempts?: number },
+  ): Promise<NanoCallResult<T>> {
+    const interval = opts.intervalMs ?? 5_000;
+    const attempts = opts.maxAttempts ?? 72;
+    if (!Number.isFinite(interval) || interval < 0 || !Number.isInteger(attempts) || attempts < 1) {
+      throw new Error("Polling requires a nonnegative interval and positive integer maxAttempts.");
+    }
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const r = await this._pollJob<T>(job, kindPath);
+      if (r.data.status === "completed") return r;
+      if (r.data.status === "failed") {
+        throw new Error(`Job ${job.id} failed upstream (not charged): ${JSON.stringify(r.data.error ?? "")}`);
+      }
+      if (attempt + 1 < attempts) await sleep(interval);
+    }
+    throw new Error(`Job ${job.id} still running. Call wait(job) again later; do not resubmit.`);
+  }
+
   private async payJson<T>(path: string, body: unknown): Promise<NanoCallResult<T>> {
     return this.payRequest<T>(path, {
       method: "POST",
@@ -503,35 +726,152 @@ export class NanoClient {
   }
 
   private async payRequest<T>(path: string, init: GatewayPayInit): Promise<NanoCallResult<T>> {
-    const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-    const result = await this.withRetry(() => this.gateway.pay<T>(url, init));
-    this.recordSpend(path, result.amount);
+    const r = await this.x402Fetch<T>(path, init);
+    // 202 = authorized, not charged. Hand back a job that can be polled.
+    const pending = r.status === 202;
+    const data =
+      pending && r.paymentHeader && typeof (r.data as { poll_url?: unknown } | null)?.poll_url === "string"
+        ? ({ ...(r.data as object), paymentHeader: r.paymentHeader, amount: r.amount } as T)
+        : r.data;
+    const amount = pending ? 0n : r.amount;
     return {
-      data: result.data,
-      payment: {
-        transaction: result.transaction,
-        formattedAmount: result.formattedAmount,
-        amount: result.amount,
-        status: result.status,
-      },
+      data,
+      payment: { transaction: r.transaction, formattedAmount: formatUnits(amount, 6), amount, status: r.status, network: this.chain },
     };
   }
 
-  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
-    let lastErr: unknown;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (err) {
-        lastErr = err;
-        if (attempt === this.maxRetries) break;
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!isRetryable(msg)) break;
-        const delay = Math.min(500 * Math.pow(2, attempt), 5000);
-        await sleep(delay);
-      }
+  /**
+   * x402 two-phase request. Phase 1 (unpaid) is retried on transient errors;
+   * phase 2 (signed) never is — a lost response there may still be charged.
+   * Spend is recorded here, before parsing, so a paid-but-unparseable
+   * response is still counted.
+   */
+  private async x402Fetch<T>(
+    path: string,
+    init: GatewayPayInit,
+  ): Promise<{ data: T; amount: bigint; transaction: string; status: number; paymentHeader?: string }> {
+    const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+    const method = init.method ?? "GET";
+    const headers: Record<string, string> = { ...init.headers };
+    const body =
+      init.body === undefined ? undefined : typeof init.body === "string" ? init.body : JSON.stringify(init.body);
+    if (body !== undefined && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) {
+      headers["Content-Type"] = "application/json";
     }
-    throw lastErr;
+    const send = (extra: Record<string, string> = {}) =>
+      fetch(url, {
+        method,
+        headers: { ...headers, ...extra },
+        ...(body !== undefined ? { body } : {}),
+        redirect: "error",
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+
+    // Phase 1: unpaid request → 402 quote (or a free response).
+    let quote: Response | undefined;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        quote = await send();
+        if (!RETRYABLE_STATUSES.has(quote.status) || attempt >= this.maxRetries) break;
+      } catch (err) {
+        if (attempt >= this.maxRetries || !isRetryableError(err)) {
+          throw new NanoRequestError(`Request to ${path} failed: ${errMessage(err)}`, 0, "", false, { cause: err });
+        }
+      }
+      await sleep(Math.min(500 * 2 ** attempt, 5000));
+    }
+    if (quote.status !== 402) {
+      if (!quote.ok) throw await this.httpError(quote, false, `Request to ${path} failed`);
+      const text = await quote.text();
+      const data = parseJson(text);
+      if (data === undefined) throw new NanoRequestError(`Request to ${path} returned a non-JSON body.`, quote.status, text.slice(0, 2000), false);
+      return { data: data as T, amount: 0n, transaction: "", status: quote.status };
+    }
+
+    const required = await readPaymentRequired(quote);
+    const option = this.selectPaymentOption(required.accepts);
+    const payload = await this.createPaymentPayload(required.x402Version ?? 2, option);
+    const paymentHeader = Buffer.from(
+      JSON.stringify({ ...payload, resource: required.resource, accepted: option }),
+    ).toString("base64");
+
+    // Phase 2: signed request. Never retried.
+    let paid: Response;
+    try {
+      paid = await send({ "Payment-Signature": paymentHeader });
+    } catch (err) {
+      throw new NanoRequestError(
+        `Paid request to ${path} failed after signing: ${errMessage(err)}. It may still be charged — check getPaymentStatus()/getBalances() before retrying.`,
+        0, "", true, { cause: err },
+      );
+    }
+    if (!paid.ok) throw await this.httpError(paid, true, `Paid request to ${path} failed`);
+    const amount = BigInt(option.amount);
+    if (amount > 0n && paid.status !== 202) this.recordSpend(path, amount);
+    const text = await paid.text();
+    const data = parseJson(text);
+    if (data === undefined) {
+      throw new NanoRequestError(`Paid request to ${path} succeeded but returned a non-JSON body (charged).`, paid.status, text.slice(0, 2000), true);
+    }
+    return {
+      data: data as T,
+      amount,
+      transaction: readPaymentResponse(paid.headers)?.transaction ?? "",
+      status: paid.status,
+      paymentHeader,
+    };
+  }
+
+  /** Pick this chain's Gateway option and refuse unsafe quotes before signing. */
+  private selectPaymentOption(accepts: PaymentRequirement[]): PaymentRequirement {
+    const config = CHAIN_CONFIGS[this.chain];
+    const expectedNetwork = `eip155:${config.chain.id}`;
+    const option = accepts.find(
+      (o) =>
+        !!o && typeof o === "object" &&
+        o.network === expectedNetwork &&
+        o.extra?.name === "GatewayWalletBatched" &&
+        o.extra?.version === "1" &&
+        typeof o.extra?.verifyingContract === "string",
+    );
+    if (!option) {
+      throw new NanoPaymentRejectedError(
+        `No Gateway batching option for ${expectedNetwork} (${this.chain}). The seller may not support this chain.`,
+      );
+    }
+    if (option.extra!.verifyingContract!.toLowerCase() !== config.gatewayWallet.toLowerCase()) {
+      throw new NanoPaymentRejectedError(
+        `Quote names verifyingContract ${option.extra!.verifyingContract}, not Circle's GatewayWallet ${config.gatewayWallet}. Refusing to sign.`,
+      );
+    }
+    if (!isAddress(option.payTo) || option.payTo.toLowerCase() === ZERO_ADDRESS) {
+      throw new NanoPaymentRejectedError(`Quote has an invalid payTo address: ${option.payTo}. Refusing to sign.`);
+    }
+    let amount: bigint;
+    try {
+      amount = BigInt(option.amount);
+    } catch {
+      throw new NanoPaymentRejectedError(`Quote has a non-integer amount: ${option.amount}. Refusing to sign.`);
+    }
+    if (amount < 0n) throw new NanoPaymentRejectedError(`Quote has a negative amount. Refusing to sign.`);
+    if (this.maxPaymentPerCall !== undefined && amount > this.maxPaymentPerCall) {
+      throw new NanoPaymentRejectedError(
+        `Quoted ${formatUnits(amount, 6)} USDC exceeds maxPaymentPerCall ${formatUnits(this.maxPaymentPerCall, 6)} USDC. Nothing was signed.`,
+      );
+    }
+    return option;
+  }
+
+  private async httpError(res: Response, paymentSigned: boolean, prefix: string): Promise<NanoRequestError> {
+    const text = await res.text().catch(() => "");
+    let detail = text;
+    try {
+      const j = JSON.parse(text) as { error?: unknown; details?: unknown; message?: unknown };
+      detail = [j.error, j.details ?? j.message].filter((x) => x !== undefined).map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(": ") || text;
+    } catch {
+      // non-JSON body
+    }
+    return new NanoRequestError(`${prefix}: HTTP ${res.status}${detail ? ` ${detail.slice(0, 300)}` : ""}`, res.status, text.slice(0, 2000), paymentSigned);
   }
 
   private recordSpend(path: string, microUsdc: bigint): void {
@@ -548,8 +888,59 @@ export class NanoClient {
   }
 
   private facilitatorUrlForChain(): string {
-    return "https://gateway-api.circle.com";
+    return circleApiBaseUrl(this.chain);
   }
+}
+
+/** Circle Gateway API host for a chain — testnets live on a separate host. */
+function circleApiBaseUrl(chain: SupportedChainName): string {
+  return CHAIN_CONFIGS[chain]?.chain.testnet
+    ? "https://gateway-api-testnet.circle.com"
+    : "https://gateway-api.circle.com";
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Settlement receipt. Most routes use PAYMENT-RESPONSE; pm/exa/solana use X-Payment-Response. */
+function readPaymentResponse(headers: Headers): { transaction: string; success?: boolean } | undefined {
+  const header = headers.get("PAYMENT-RESPONSE") ?? headers.get("X-Payment-Response");
+  if (!header) return undefined;
+  const settle = parseJson(Buffer.from(header, "base64").toString("utf-8")) as { transaction?: unknown; success?: unknown } | undefined;
+  if (!settle || typeof settle !== "object") return undefined;
+  return {
+    transaction: typeof settle.transaction === "string" ? settle.transaction : "",
+    ...(typeof settle.success === "boolean" ? { success: settle.success } : {}),
+  };
+}
+
+/** Parse a 402 quote from the PAYMENT-REQUIRED header, or the body when the header is absent (pm routes). */
+async function readPaymentRequired(
+  res: Response,
+): Promise<{ x402Version?: number; resource?: unknown; accepts: PaymentRequirement[] }> {
+  const header = res.headers.get("PAYMENT-REQUIRED");
+  const raw = header ? Buffer.from(header, "base64").toString("utf-8") : await res.text().catch(() => "");
+  const parsed = parseJson(raw) as { x402Version?: unknown; resource?: unknown; accepts?: unknown } | undefined;
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.accepts)) {
+    throw new NanoRequestError(
+      header ? "402 PAYMENT-REQUIRED header is not a valid x402 quote" : "402 response carried no PAYMENT-REQUIRED header or accepts body",
+      402, raw.slice(0, 2000), false,
+    );
+  }
+  return {
+    ...(typeof parsed.x402Version === "number" ? { x402Version: parsed.x402Version } : {}),
+    resource: parsed.resource,
+    accepts: parsed.accepts as PaymentRequirement[],
+  };
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function bucketOf(path: string): string {
@@ -559,154 +950,99 @@ function bucketOf(path: string): string {
   return "/" + parts.slice(0, 2).join("/");
 }
 
-// =============================================================================
-// Namespaced helpers — accessed as client.x, client.images, ...
-// =============================================================================
-
-/** X / Twitter helpers (powered by AttentionVC). */
-export class XHelpers {
-  constructor(private readonly nano: NanoClient) {}
-
-  /** Look up X user profile(s) by handle. $0.002/user. */
-  userLookup<T = unknown>(usernames: string | string[]): Promise<NanoCallResult<T>> {
-    const list = Array.isArray(usernames) ? usernames : [usernames];
-    return this.nano._payGet<T>("/api/v1/x/users/lookup", { usernames: list.join(",") });
-  }
-
-  /** Look up a single X user's profile + intelligence info. */
-  userInfo<T = unknown>(username: string): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/users/info", { username });
-  }
-
-  /** Followers of an X user. $0.05/page (~200 accounts). */
-  followers<T = unknown>(username: string, opts: { cursor?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/users/followers", { username, ...opts });
-  }
-
-  /** Followings of an X user. */
-  followings<T = unknown>(username: string, opts: { cursor?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/users/followings", { username, ...opts });
-  }
-
-  /** Verified followers of an X user. */
-  verifiedFollowers<T = unknown>(username: string, opts: { cursor?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/users/verified-followers", { username, ...opts });
-  }
-
-  /** Recent tweets from a user. */
-  userTweets<T = unknown>(username: string, opts: { cursor?: string; limit?: number } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/users/tweets", { username, ...opts });
-  }
-
-  /** Recent mentions of a user. */
-  userMentions<T = unknown>(username: string, opts: { cursor?: string; limit?: number } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/users/mentions", { username, ...opts });
-  }
-
-  /** Look up a tweet by ID(s). */
-  tweetLookup<T = unknown>(tweetIds: string | string[]): Promise<NanoCallResult<T>> {
-    const list = Array.isArray(tweetIds) ? tweetIds : [tweetIds];
-    return this.nano._payGet<T>("/api/v1/x/tweets/lookup", { tweet_ids: list.join(",") });
-  }
-
-  /** Replies under a tweet. */
-  tweetReplies<T = unknown>(tweetId: string, opts: { cursor?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/tweets/replies", { tweet_id: tweetId, ...opts });
-  }
-
-  /** Full thread containing a tweet. */
-  tweetThread<T = unknown>(tweetId: string, opts: { cursor?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/tweets/thread", { tweet_id: tweetId, ...opts });
-  }
-
-  /** X advanced search with operators. $0.032/page. */
-  search<T = unknown>(query: string, opts: { query_type?: "Latest" | "Top"; cursor?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/search", { query, ...opts });
-  }
-
-  /** Current trending topics. $0.002/request. */
-  trending<T = unknown>(): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/trending");
-  }
-
-  /** Rising long-form articles. */
-  articlesRising<T = unknown>(): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/x/articles/rising");
-  }
+/** Map a deprecated alias onto its canonical field without overriding it. */
+function withAlias(body: object, alias: string, canonical: string): Record<string, unknown> {
+  const { [alias]: value, ...rest } = body as Record<string, unknown>;
+  return rest[canonical] === undefined && value !== undefined ? { ...rest, [canonical]: value } : rest;
 }
+
+// =============================================================================
+// Namespaced helpers — accessed as client.images, client.videos, ...
+// =============================================================================
 
 /** Image generation + editing. */
 export class ImagesHelpers {
   constructor(private readonly nano: NanoClient) {}
 
-  /** POST /api/v1/images/generations — DALL-E / Flux / Gemini Nano Banana / etc. */
+  /**
+   * POST /api/v1/images/generations — GPT Image / Nano Banana / Grok Imagine / CogView.
+   * Fast models return the image (HTTP 200). Slow models return HTTP 202 with
+   * a job (`isNanoAsyncJob(r.data)`); pass it to {@link wait}.
+   */
   generate<T = unknown>(body: ImagesRequest): Promise<NanoCallResult<T>> {
     return this.nano._payJson<T>("/api/v1/images/generations", body);
   }
 
-  /** POST /api/v1/images/image2image — image editing / variation. */
+  /** POST /api/v1/images/image2image — image editing / variation. May also return a 202 job. */
   edit<T = unknown>(body: ImageEditRequest): Promise<NanoCallResult<T>> {
     return this.nano._payJson<T>("/api/v1/images/image2image", body);
   }
+
+  /** Poll a 202 image job once. */
+  status<T extends NanoJobStatus = NanoJobStatus>(job: NanoAsyncJob): Promise<NanoCallResult<T>> {
+    return this.nano._pollJob<T>(job, "/api/v1/images/generations");
+  }
+
+  /** Poll a 202 image job until `completed` (returned) or `failed` (thrown — not charged). */
+  wait<T extends NanoJobStatus = NanoJobStatus>(job: NanoAsyncJob, opts: { intervalMs?: number; maxAttempts?: number } = {}): Promise<NanoCallResult<T>> {
+    return this.nano._waitJob<T>(job, "/api/v1/images/generations", opts);
+  }
 }
 
-/** Video generation. */
+/**
+ * Async video generation. The POST authorizes payment; settlement happens on
+ * the first poll that finds the job completed. Upstream failure = no charge.
+ *
+ * @example
+ *   const { data: job } = await client.videos.generate({ model: "xai/grok-imagine-video", prompt: "a cat", duration_seconds: 6 });
+ *   const done = await client.videos.wait(job);
+ */
 export class VideosHelpers {
   constructor(private readonly nano: NanoClient) {}
 
-  /** Submit a video generation job. */
-  generate<T = unknown>(body: VideosRequest): Promise<NanoCallResult<T>> {
-    return this.nano._payJson<T>("/api/v1/videos/generations", body);
+  /** Submit a job. Keep the returned job object; polling replays its authorization. */
+  generate(body: VideosRequest): Promise<NanoCallResult<NanoVideoJob>> {
+    return this.nano._submitVideo(withAlias(body, "duration", "duration_seconds"));
   }
 
-  /** Poll a video job by ID. */
-  status<T = unknown>(id: string): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>(`/api/v1/videos/generations/${encodeURIComponent(id)}`);
+  /** Poll once. Returns `queued` / `in_progress` (HTTP 202), then `completed` or `failed`. */
+  status<T extends NanoJobStatus = NanoJobStatus>(job: NanoVideoJob): Promise<NanoCallResult<T>> {
+    return this.nano._pollJob<T>(job, "/api/v1/videos/generations");
+  }
+
+  /** Poll until `completed` (returned) or `failed` (thrown — not charged). */
+  wait<T extends NanoJobStatus = NanoJobStatus>(job: NanoVideoJob, opts: { intervalMs?: number; maxAttempts?: number } = {}): Promise<NanoCallResult<T>> {
+    return this.nano._waitJob<T>(job, "/api/v1/videos/generations", opts);
   }
 }
 
-/** Music + ambient audio generation. */
+/** Music generation (one synchronous 30-120s call). */
 export class MusicHelpers {
   constructor(private readonly nano: NanoClient) {}
 
-  /** Generate music. Some BlockRun deployments expose this at /api/v1/audio/generations with model:"music/*". */
+  /** POST /api/v1/audio/generations — e.g. `minimax/music-2.5+`. */
   generate<T = unknown>(body: MusicRequest): Promise<NanoCallResult<T>> {
-    return this.nano._payJson<T>("/api/v1/audio/generations", body);
+    return this.nano._payJson<T>("/api/v1/audio/generations", withAlias(body, "duration", "duration_seconds"));
   }
 }
 
-/** Speech-to-text and text-to-speech. */
+/** Text-to-speech and sound effects (ElevenLabs). */
 export class AudioHelpers {
   constructor(private readonly nano: NanoClient) {}
 
-  /** Audio generation (TTS) or transcription, depending on model. */
-  generate<T = unknown>(body: AudioRequest): Promise<NanoCallResult<T>> {
-    return this.nano._payJson<T>("/api/v1/audio/generations", body);
+  /** POST /api/v1/audio/speech — billed per input character; returns a hosted audio URL. */
+  speech<T = unknown>(body: SpeechRequest): Promise<NanoCallResult<T>> {
+    return this.nano._payJson<T>("/api/v1/audio/speech", withAlias(body, "format", "response_format"));
   }
 
-  /** Convenience alias for text-to-speech. */
-  tts<T = unknown>(body: AudioRequest): Promise<NanoCallResult<T>> {
-    return this.generate<T>(body);
-  }
-}
-
-/** Pyth-backed price + market data (`/api/v1/price`, `/api/v1/pm/*`). */
-export class PriceHelpers {
-  constructor(private readonly nano: NanoClient) {}
-
-  /** Spot price for a symbol. */
-  price<T = unknown>(symbol: string): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/price", { symbol });
+  /** Alias of {@link speech}. */
+  tts<T = unknown>(body: SpeechRequest): Promise<NanoCallResult<T>> {
+    return this.speech<T>(body);
   }
 
-  /** Historical price points. */
-  history<T = unknown>(symbol: string, opts: { range?: string; resolution?: string } = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>("/api/v1/price/history", { symbol, ...opts });
-  }
-
-  /** Generic Predexon market call — `path` is appended to /api/v1/pm/. */
-  pm<T = unknown>(path: string, params: Record<string, unknown> = {}): Promise<NanoCallResult<T>> {
-    return this.nano._payGet<T>(`/api/v1/pm/${path.replace(/^\/+/, "")}`, params);
+  /** POST /api/v1/audio/sound-effects — up to 22s, flat price per generation. */
+  soundEffects<T = unknown>(body: SoundEffectsRequest): Promise<NanoCallResult<T>> {
+    return this.nano._payJson<T>("/api/v1/audio/sound-effects", body);
   }
 }
 
@@ -743,7 +1079,7 @@ export async function querySellerGatewayBalance(
 }> {
   const domain = GATEWAY_DOMAINS[chain];
   if (domain === undefined) throw new Error(`Unknown chain: ${chain}`);
-  const baseUrl = opts.facilitatorUrl ?? "https://gateway-api.circle.com";
+  const baseUrl = opts.facilitatorUrl ?? circleApiBaseUrl(chain);
   const r = await fetch(`${baseUrl}/v1/balances`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -773,7 +1109,11 @@ export async function querySellerGatewayBalance(
 // Internal helpers
 // =============================================================================
 
-function interpretCircleStatus(intentId: string, body: Record<string, unknown>): PaymentStatus {
+function interpretCircleStatus(
+  intentId: string,
+  body: Record<string, unknown>,
+  facilitatorUrl: string,
+): PaymentStatus {
   const status = String(body.status ?? "").toLowerCase();
   const txHash = (body.transactionHash as string | undefined) ?? (body.onchainTx as string | undefined);
   const settledAt = (body.updatedAt as string | undefined) ?? (body.settledAt as string | undefined);
@@ -798,7 +1138,7 @@ function interpretCircleStatus(intentId: string, body: Record<string, unknown>):
   return {
     status: "pending",
     intentId,
-    facilitatorUrl: "https://gateway-api.circle.com",
+    facilitatorUrl,
     note: `Circle returned status="${status}" — ${status === "received" ? "verified, queued for next batch" : status === "batched" ? "batching in progress" : "still queued"}.`,
   };
 }
